@@ -39,6 +39,13 @@ print_info() {
 # FUNCȚII DE INSTALARE COMPONENTE
 # ============================================
 
+# --- Asigură directoarele necesare ---
+ensure_directories() {
+    mkdir -p /mnt/hdd/k8s/{traefik,adguard,vaultwarden,minio,headlamp}
+    mkdir -p /mnt/hdd/cert
+    mkdir -p /var/lib/rancher/k3s/server/manifests/
+}
+
 # --- Instalare K3s (separată) ---
 install_k3s_only() {
     print_header "INSTALARE K3S (doar Kubernetes)"
@@ -56,6 +63,9 @@ install_k3s_only() {
 
     # Instalare pachete necesare
     dnf install -y tar git openssl curl mc nano jq
+
+    # Asigură directoarele
+    ensure_directories
 
     # Configurare K3s
     configure_k3s
@@ -98,10 +108,8 @@ install_full() {
     # Instalare pachete necesare
     dnf install -y tar git openssl curl mc nano httpd-tools jq
 
-    # Creare structură directoare
-    mkdir -p /mnt/hdd/k8s/{traefik,adguard,vaultwarden,minio,headlamp}
-    mkdir -p /mnt/hdd/cert
-    cd /mnt/hdd/k8s
+    # Asigură directoarele
+    ensure_directories
 
     # Generare parole
     generate_credentials
@@ -134,6 +142,8 @@ install_full() {
 install_traefik_only() {
     print_header "INSTALARE DOAR TRAEFIK DASHBOARD"
     
+    ensure_directories
+    
     # Setează NODE_IP
     NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
     if [ -z "$NODE_IP" ]; then
@@ -157,7 +167,8 @@ install_traefik_only() {
 # --- Instalare doar AdGuard ---
 install_adguard_only() {
     print_header "INSTALARE DOAR ADGUARD"
-    # Setează NODE_IP
+    ensure_directories
+    
     NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
     if [ -z "$NODE_IP" ]; then
         NODE_IP=$(hostname -I | awk '{print $1}')
@@ -170,13 +181,13 @@ install_adguard_only() {
 # --- Instalare doar Vaultwarden ---
 install_vaultwarden_only() {
     print_header "INSTALARE DOAR VAULTWARDEN"
-    # Setează NODE_IP
+    ensure_directories
+    
     NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
     if [ -z "$NODE_IP" ]; then
         NODE_IP=$(hostname -I | awk '{print $1}')
     fi
     
-    # Refolosește token-ul dacă există
     if [ -f /root/k8s-credentials.txt ]; then
         VAULTWARDEN_ADMIN_TOKEN=$(grep -A1 "VAULTWARDEN" /root/k8s-credentials.txt | grep "Admin Token:" | awk '{print $3}' | head -1)
     fi
@@ -193,13 +204,13 @@ install_vaultwarden_only() {
 # --- Instalare doar MinIO ---
 install_minio_only() {
     print_header "INSTALARE DOAR MINIO"
-    # Setează NODE_IP
+    ensure_directories
+    
     NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
     if [ -z "$NODE_IP" ]; then
         NODE_IP=$(hostname -I | awk '{print $1}')
     fi
     
-    # Refolosește parola dacă există
     if [ -f /root/k8s-credentials.txt ]; then
         MINIO_PASSWORD=$(grep -A1 "MINIO" /root/k8s-credentials.txt | grep "Root Password:" | awk '{print $3}' | head -1)
     fi
@@ -237,6 +248,7 @@ uninstall_full() {
     sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /mnt/hdd/k8s /mnt/hdd/cert /root/k8s-credentials.txt /root/headlamp-token.txt
     sudo rm -f /etc/nftables/nftables.conf /etc/sysconfig/nftables.conf
     sudo rm -f /usr/local/bin/nftables-backup.sh
+    sudo rm -rf /var/lib/rancher/k3s/server/manifests/traefik-dashboard-config.yaml
     
     sudo systemctl reset-failed k3s.service 2>/dev/null || true
     
@@ -785,6 +797,9 @@ install_headlamp() {
         helm install my-headlamp headlamp/headlamp --namespace kube-system 2>/dev/null || true
     fi
 
+    # Asigură că directorul există
+    mkdir -p /mnt/hdd/k8s/headlamp
+    
     cat > /mnt/hdd/k8s/headlamp/headlamp-ingress.yaml << 'EOF11'
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
