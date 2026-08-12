@@ -15,7 +15,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # ============================================
-# FUNCȚII DE AFIȘARE (definite PRIMELE)
+# FUNCȚII DE AFIȘARE
 # ============================================
 print_header() {
     echo -e "${BLUE}=========================================${NC}"
@@ -36,15 +36,17 @@ print_info() {
 }
 
 # ============================================
-# FUNCȚIA DE INSTALARE K3S (separată)
+# FUNCȚII DE INSTALARE COMPONENTE
 # ============================================
+
+# --- Instalare K3s (separată) ---
 install_k3s_only() {
     print_header "INSTALARE K3S (doar Kubernetes)"
     echo "Data: $(date)"
     echo "Host: $(hostname -f)"
     echo ""
 
-    # 0. Detectare IP automat
+    # Detectare IP automat
     echo "=== Detectare IP automat ==="
     NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
     if [ -z "$NODE_IP" ]; then
@@ -52,38 +54,40 @@ install_k3s_only() {
     fi
     echo "✅ IP detectat: $NODE_IP"
 
-    # 1. Instalare pachete necesare
+    # Instalare pachete necesare
     dnf install -y tar git openssl curl mc nano jq
 
-    # 2. Configurare K3s
+    # Configurare K3s
     configure_k3s
 
-    # 3. Instalare K3s
+    # Instalare K3s
     install_k3s
 
-    # 4. Configurare kubectl
+    # Configurare kubectl
     configure_kubectl
 
-    # 5. Instalare Helm
+    # Instalare Helm
     install_helm
 
-    print_success "K3s instalat cu succes!"
+    # Instalare Headlamp (pentru management UI)
+    install_headlamp
+
+    print_success "K3s + Helm + Headlamp instalat cu succes!"
     echo ""
     echo "📋 Pentru a verifica:"
     echo "   kubectl get nodes"
     echo "   kubectl get pods -A"
+    echo "   Headlamp: https://dashboard.aalto.md"
 }
 
-# ============================================
-# FUNCȚIA DE INSTALARE COMPLETĂ
-# ============================================
+# --- Instalare completă ---
 install_full() {
     print_header "INSTALARE COMPLETĂ K3S CLUSTER"
     echo "Data: $(date)"
     echo "Host: $(hostname -f)"
     echo ""
 
-    # 0. Detectare IP automat
+    # Detectare IP automat
     echo "=== Detectare IP automat ==="
     NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
     if [ -z "$NODE_IP" ]; then
@@ -91,15 +95,161 @@ install_full() {
     fi
     echo "✅ IP detectat: $NODE_IP"
 
-    # 1. Instalare pachete necesare
+    # Instalare pachete necesare
     dnf install -y tar git openssl curl mc nano httpd-tools jq
 
-    # 2. Creare structură directoare
+    # Creare structură directoare
     mkdir -p /mnt/hdd/k8s/{traefik,adguard,vaultwarden,minio,headlamp}
     mkdir -p /mnt/hdd/cert
     cd /mnt/hdd/k8s
 
-    # 3. Generare sau reutilizare parole
+    # Generare parole
+    generate_credentials
+
+    # Configurare nftables
+    configure_nftables
+    configure_nftables_backup
+
+    # Configurare K3s
+    configure_k3s
+    install_k3s
+    configure_kubectl
+    install_helm
+
+    # Instalare servicii
+    install_traefik
+    install_adguard
+    install_vaultwarden
+    install_minio
+    install_headlamp
+    create_tls_secrets
+
+    # Verificare finală
+    final_verification
+
+    print_success "Instalare completă!"
+}
+
+# --- Instalare doar Traefik ---
+install_traefik_only() {
+    print_header "INSTALARE DOAR TRAEFIK DASHBOARD"
+    
+    # Setează NODE_IP
+    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    if [ -z "$NODE_IP" ]; then
+        NODE_IP=$(hostname -I | awk '{print $1}')
+    fi
+    
+    # Refolosește parola dacă există
+    if [ -f /root/k8s-credentials.txt ]; then
+        TRAEFIK_PASSWORD=$(grep -A1 "TRAEFIK DASHBOARD" /root/k8s-credentials.txt | grep "Password:" | awk '{print $2}' | head -1)
+    fi
+    if [ -z "$TRAEFIK_PASSWORD" ]; then
+        TRAEFIK_PASSWORD=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9!?%=' | head -c 16)
+    fi
+    
+    install_traefik
+    print_success "Traefik Dashboard instalat!"
+    echo "🔑 Parolă: ${TRAEFIK_PASSWORD}"
+    echo "🌐 Accesează: https://traefik.aalto.md/dashboard/"
+}
+
+# --- Instalare doar AdGuard ---
+install_adguard_only() {
+    print_header "INSTALARE DOAR ADGUARD"
+    # Setează NODE_IP
+    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    if [ -z "$NODE_IP" ]; then
+        NODE_IP=$(hostname -I | awk '{print $1}')
+    fi
+    install_adguard
+    print_success "AdGuard instalat!"
+    echo "🌐 Accesează: https://adguard.aalto.md"
+}
+
+# --- Instalare doar Vaultwarden ---
+install_vaultwarden_only() {
+    print_header "INSTALARE DOAR VAULTWARDEN"
+    # Setează NODE_IP
+    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    if [ -z "$NODE_IP" ]; then
+        NODE_IP=$(hostname -I | awk '{print $1}')
+    fi
+    
+    # Refolosește token-ul dacă există
+    if [ -f /root/k8s-credentials.txt ]; then
+        VAULTWARDEN_ADMIN_TOKEN=$(grep -A1 "VAULTWARDEN" /root/k8s-credentials.txt | grep "Admin Token:" | awk '{print $3}' | head -1)
+    fi
+    if [ -z "$VAULTWARDEN_ADMIN_TOKEN" ]; then
+        VAULTWARDEN_ADMIN_TOKEN=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
+    fi
+    
+    install_vaultwarden
+    print_success "Vaultwarden instalat!"
+    echo "🔑 Admin Token: ${VAULTWARDEN_ADMIN_TOKEN}"
+    echo "🌐 Accesează: https://vault.aalto.md"
+}
+
+# --- Instalare doar MinIO ---
+install_minio_only() {
+    print_header "INSTALARE DOAR MINIO"
+    # Setează NODE_IP
+    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    if [ -z "$NODE_IP" ]; then
+        NODE_IP=$(hostname -I | awk '{print $1}')
+    fi
+    
+    # Refolosește parola dacă există
+    if [ -f /root/k8s-credentials.txt ]; then
+        MINIO_PASSWORD=$(grep -A1 "MINIO" /root/k8s-credentials.txt | grep "Root Password:" | awk '{print $3}' | head -1)
+    fi
+    if [ -z "$MINIO_PASSWORD" ]; then
+        MINIO_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9!?%=' | head -c 32)
+    fi
+    
+    install_minio
+    print_success "MinIO instalat!"
+    echo "🔑 Root Password: ${MINIO_PASSWORD}"
+    echo "🌐 Accesează: https://minio.aalto.md (API) / https://minio-console.aalto.md (Console)"
+}
+
+# ============================================
+# FUNCȚIA DE ȘTERGERE COMPLETĂ
+# ============================================
+uninstall_full() {
+    print_header "ȘTERGERE COMPLETĂ K3S CLUSTER"
+    
+    read -p "⚠️  Ești sigur că vrei să ștergi complet clusterul? (da/nu): " confirm
+    if [ "$confirm" != "da" ]; then
+        print_info "Operațiune anulată."
+        return
+    fi
+
+    echo "=== Ștergere K3s și toate resursele ==="
+    
+    sudo systemctl stop k3s 2>/dev/null || true
+    sudo systemctl stop nftables 2>/dev/null || true
+    
+    if [ -f /usr/local/bin/k3s-uninstall.sh ]; then
+        sudo /usr/local/bin/k3s-uninstall.sh || true
+    fi
+    
+    sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /mnt/hdd/k8s /mnt/hdd/cert /root/k8s-credentials.txt /root/headlamp-token.txt
+    sudo rm -f /etc/nftables/nftables.conf /etc/sysconfig/nftables.conf
+    sudo rm -f /usr/local/bin/nftables-backup.sh
+    
+    sudo systemctl reset-failed k3s.service 2>/dev/null || true
+    
+    sudo crontab -l 2>/dev/null | grep -v "nftables-backup.sh" | sudo crontab - 2>/dev/null || true
+    
+    print_success "Cluster șters complet. Serverul este curat."
+}
+
+# ============================================
+# FUNCȚII AUXILIARE
+# ============================================
+
+generate_credentials() {
     echo "=== Gestionare credențiale ==="
     if [ -f /root/k8s-credentials.txt ]; then
         print_info "Fișierul cu credențiale există. Se reutilizează parolele existente..."
@@ -120,7 +270,6 @@ install_full() {
         HEADLAMP_TOKEN=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
     fi
 
-    # 4. Salvare parole
     cat > /root/k8s-credentials.txt << EOF2
 ===========================================
    KUBERNETES CLUSTER CREDENTIALS
@@ -160,179 +309,6 @@ EOF2
 
     chmod 600 /root/k8s-credentials.txt
     print_success "Credențialele au fost salvate în /root/k8s-credentials.txt"
-
-    # 5. Configurare nftables
-    configure_nftables
-
-    # 6. Backup nftables
-    configure_nftables_backup
-
-    # 7. Configurare K3s
-    configure_k3s
-
-    # 8. Instalare K3s
-    install_k3s
-
-    # 9. Configurare kubectl
-    configure_kubectl
-
-    # 10. Instalare Helm
-    install_helm
-
-    # 11. Instalare Traefik
-    install_traefik
-
-    # 12. Instalare AdGuard
-    install_adguard
-
-    # 13. Instalare Vaultwarden
-    install_vaultwarden
-
-    # 14. Instalare MinIO
-    install_minio
-
-    # 15. Instalare Headlamp
-    install_headlamp
-
-    # 16. Creare secrete TLS
-    create_tls_secrets
-
-    # 17. Verificare finală
-    final_verification
-
-    print_success "Instalare completă!"
-}
-
-# ============================================
-# FUNCȚIA DE ȘTERGERE COMPLETĂ
-# ============================================
-uninstall_full() {
-    print_header "ȘTERGERE COMPLETĂ K3S CLUSTER"
-    
-    read -p "⚠️  Ești sigur că vrei să ștergi complet clusterul? (da/nu): " confirm
-    if [ "$confirm" != "da" ]; then
-        print_info "Operațiune anulată."
-        return
-    fi
-
-    echo "=== Ștergere K3s și toate resursele ==="
-    
-    # Oprește serviciile
-    sudo systemctl stop k3s 2>/dev/null || true
-    sudo systemctl stop nftables 2>/dev/null || true
-    
-    # Rulează scriptul de uninstall K3s
-    if [ -f /usr/local/bin/k3s-uninstall.sh ]; then
-        sudo /usr/local/bin/k3s-uninstall.sh || true
-    fi
-    
-    # Șterge fișierele și directoarele
-    sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /mnt/hdd/k8s /mnt/hdd/cert /root/k8s-credentials.txt /root/headlamp-token.txt
-    sudo rm -f /etc/nftables/nftables.conf /etc/sysconfig/nftables.conf
-    sudo rm -f /usr/local/bin/nftables-backup.sh
-    
-    # Resetează systemd
-    sudo systemctl reset-failed k3s.service 2>/dev/null || true
-    
-    # Șterge din crontab
-    sudo crontab -l 2>/dev/null | grep -v "nftables-backup.sh" | sudo crontab - 2>/dev/null || true
-    
-    print_success "Cluster șters complet. Serverul este curat."
-}
-
-# ============================================
-# FUNCȚII AUXILIARE
-# ============================================
-
-configure_nftables() {
-    if ! grep -q "WHITELIST_DMZ" /etc/nftables/nftables.conf 2>/dev/null; then
-        echo "=== Configurare nftables ==="
-        sudo tee /etc/nftables/nftables.conf > /dev/null <<'EOF3'
-#!/usr/sbin/nft -f
-
-flush ruleset
-
-define WHITELIST_DMZ = {
-        194.33.42.0/24,
-        83.218.219.0/24,
-        93.113.159.0/24
-}
-
-table inet filter {
-
-    chain input {
-        type filter hook input priority filter;
-        policy drop;
-
-        ct state established,related accept
-        iifname "lo" accept
-        ip protocol icmp accept
-        ip6 nexthdr icmpv6 accept
-        tcp dport 22 accept comment "SSH"
-        tcp dport 3004 ip saddr != { 127.0.0.1, 192.168.100.0/24, 192.168.88.0/24, $WHITELIST_DMZ } drop
-        tcp dport { 80, 8080-9500 } accept comment "HTTP"
-        tcp dport 443 accept comment "HTTPS"
-        ip saddr 192.168.100.0/24 tcp dport 6443 accept comment "K3s API"
-        ip saddr 192.168.100.0/24 udp dport 8472 accept comment "Flannel VXLAN"
-        ip saddr 192.168.100.0/24 tcp dport 10250 accept comment "Kubelet"
-        ip saddr 192.168.100.0/24 tcp dport { 2379, 2380 } accept comment "K3s embedded etcd"
-        ip saddr 192.168.100.0/24 tcp dport 5001 accept comment "K3s Spegel"
-        tcp dport 30080 accept comment "Traefik HTTP NodePort"
-        tcp dport 30443 accept comment "Traefik HTTPS NodePort"
-        tcp dport 30000-32767 accept comment "Kubernetes NodePort TCP"
-        udp dport 30000-32767 accept comment "Kubernetes NodePort UDP"
-    }
-
-    chain forward {
-        type filter hook forward priority filter;
-        policy accept;
-    }
-
-    chain output {
-        type filter hook output priority filter;
-        policy accept;
-    }
-}
-EOF3
-
-        sudo tee /etc/sysconfig/nftables.conf > /dev/null <<'EOF4'
-include "/etc/nftables/nftables.conf"
-EOF4
-
-        sudo nft -c -f /etc/nftables/nftables.conf
-        sudo nft -f /etc/nftables/nftables.conf
-        sudo nft list ruleset
-        sudo systemctl enable nftables
-        sudo systemctl restart nftables
-        print_success "nftables configurat"
-    else
-        print_info "nftables este deja configurat - se sare peste"
-    fi
-}
-
-configure_nftables_backup() {
-    if [ ! -f /usr/local/bin/nftables-backup.sh ]; then
-        sudo tee /usr/local/bin/nftables-backup.sh > /dev/null << 'EOF5'
-#!/bin/bash
-
-BACKUP_DIR="/root/nftables-backups"
-mkdir -p "$BACKUP_DIR"
-BACKUP_FILE="$BACKUP_DIR/nftables-backup-$(date +%Y%m%d-%H%M%S).conf"
-/usr/sbin/nft list ruleset > "$BACKUP_FILE"
-find "$BACKUP_DIR" -type f -name 'nftables-backup-*.conf' -mtime +7 -delete
-echo "Backup saved to: $BACKUP_FILE"
-EOF5
-
-        sudo chmod +x /usr/local/bin/nftables-backup.sh
-        sudo /usr/local/bin/nftables-backup.sh
-
-        if ! sudo crontab -l 2>/dev/null | grep -q "nftables-backup.sh"; then
-            (sudo crontab -l 2>/dev/null; echo '0 2 * * * /usr/local/bin/nftables-backup.sh >> /var/log/nftables-backup.log 2>&1') | sudo crontab -
-            print_success "Backup nftables adăugat în crontab"
-        fi
-    else
-        print_info "Backup nftables există deja - se sare peste"
-    fi
 }
 
 configure_k3s() {
@@ -405,16 +381,13 @@ install_helm() {
 }
 
 install_traefik() {
-    echo "=== Instalare Traefik cu configurație corectă ==="
+    echo "=== Instalare Traefik Dashboard ==="
     
-    # Adaugă repository-uri
     helm repo add traefik https://traefik.github.io/charts 2>/dev/null || true
     helm repo update
 
-    # Creează namespace-ul corect (kube-system pentru K3s)
     kubectl create namespace kube-system 2>/dev/null || true
 
-    # Creează secretul TLS în namespace-ul corect
     if [ -f /mnt/hdd/cert/wildcard.crt ] && [ -f /mnt/hdd/cert/wildcard.key ]; then
         kubectl create secret tls traefik-dashboard-tls \
             --cert=/mnt/hdd/cert/wildcard.crt \
@@ -422,7 +395,6 @@ install_traefik() {
             -n kube-system 2>/dev/null || print_info "Secretul TLS există deja"
     fi
 
-    # Configurare HelmChartConfig pentru K3s
     sudo mkdir -p /var/lib/rancher/k3s/server/manifests/
     sudo tee /var/lib/rancher/k3s/server/manifests/traefik-dashboard-config.yaml << 'EOF'
 apiVersion: helm.cattle.io/v1
@@ -445,14 +417,12 @@ EOF
     kubectl apply -f /var/lib/rancher/k3s/server/manifests/traefik-dashboard-config.yaml 2>/dev/null || true
     kubectl rollout status deployment/traefik -n kube-system 2>/dev/null || true
 
-    # Creează autentificarea
     htpasswd -nbB admin "${TRAEFIK_PASSWORD}" > /tmp/dashboard-auth.txt
     kubectl create secret generic traefik-dashboard-auth \
         --from-file=users=/tmp/dashboard-auth.txt \
         -n kube-system 2>/dev/null || true
     rm /tmp/dashboard-auth.txt
 
-    # Creează middleware-urile
     cat > /tmp/traefik-middleware.yaml << 'EOF'
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -479,7 +449,6 @@ spec:
 EOF
     kubectl apply -f /tmp/traefik-middleware.yaml
 
-    # Creează IngressRoute pentru dashboard
     cat > /tmp/traefik-ingressroute.yaml << 'EOF'
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -838,6 +807,97 @@ EOF11
     print_success "Headlamp instalat"
 }
 
+configure_nftables() {
+    if ! grep -q "WHITELIST_DMZ" /etc/nftables/nftables.conf 2>/dev/null; then
+        echo "=== Configurare nftables ==="
+        sudo tee /etc/nftables/nftables.conf > /dev/null <<'EOF3'
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+define WHITELIST_DMZ = {
+        194.33.42.0/24,
+        83.218.219.0/24,
+        93.113.159.0/24
+}
+
+table inet filter {
+
+    chain input {
+        type filter hook input priority filter;
+        policy drop;
+
+        ct state established,related accept
+        iifname "lo" accept
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+        tcp dport 22 accept comment "SSH"
+        tcp dport 3004 ip saddr != { 127.0.0.1, 192.168.100.0/24, 192.168.88.0/24, $WHITELIST_DMZ } drop
+        tcp dport { 80, 8080-9500 } accept comment "HTTP"
+        tcp dport 443 accept comment "HTTPS"
+        ip saddr 192.168.100.0/24 tcp dport 6443 accept comment "K3s API"
+        ip saddr 192.168.100.0/24 udp dport 8472 accept comment "Flannel VXLAN"
+        ip saddr 192.168.100.0/24 tcp dport 10250 accept comment "Kubelet"
+        ip saddr 192.168.100.0/24 tcp dport { 2379, 2380 } accept comment "K3s embedded etcd"
+        ip saddr 192.168.100.0/24 tcp dport 5001 accept comment "K3s Spegel"
+        tcp dport 30080 accept comment "Traefik HTTP NodePort"
+        tcp dport 30443 accept comment "Traefik HTTPS NodePort"
+        tcp dport 30000-32767 accept comment "Kubernetes NodePort TCP"
+        udp dport 30000-32767 accept comment "Kubernetes NodePort UDP"
+    }
+
+    chain forward {
+        type filter hook forward priority filter;
+        policy accept;
+    }
+
+    chain output {
+        type filter hook output priority filter;
+        policy accept;
+    }
+}
+EOF3
+
+        sudo tee /etc/sysconfig/nftables.conf > /dev/null <<'EOF4'
+include "/etc/nftables/nftables.conf"
+EOF4
+
+        sudo nft -c -f /etc/nftables/nftables.conf
+        sudo nft -f /etc/nftables/nftables.conf
+        sudo nft list ruleset
+        sudo systemctl enable nftables
+        sudo systemctl restart nftables
+        print_success "nftables configurat"
+    else
+        print_info "nftables este deja configurat - se sare peste"
+    fi
+}
+
+configure_nftables_backup() {
+    if [ ! -f /usr/local/bin/nftables-backup.sh ]; then
+        sudo tee /usr/local/bin/nftables-backup.sh > /dev/null << 'EOF5'
+#!/bin/bash
+
+BACKUP_DIR="/root/nftables-backups"
+mkdir -p "$BACKUP_DIR"
+BACKUP_FILE="$BACKUP_DIR/nftables-backup-$(date +%Y%m%d-%H%M%S).conf"
+/usr/sbin/nft list ruleset > "$BACKUP_FILE"
+find "$BACKUP_DIR" -type f -name 'nftables-backup-*.conf' -mtime +7 -delete
+echo "Backup saved to: $BACKUP_FILE"
+EOF5
+
+        sudo chmod +x /usr/local/bin/nftables-backup.sh
+        sudo /usr/local/bin/nftables-backup.sh
+
+        if ! sudo crontab -l 2>/dev/null | grep -q "nftables-backup.sh"; then
+            (sudo crontab -l 2>/dev/null; echo '0 2 * * * /usr/local/bin/nftables-backup.sh >> /var/log/nftables-backup.log 2>&1') | sudo crontab -
+            print_success "Backup nftables adăugat în crontab"
+        fi
+    else
+        print_info "Backup nftables există deja - se sare peste"
+    fi
+}
+
 create_tls_secrets() {
     echo "=== Creare secrete TLS ==="
     if [ -f /mnt/hdd/cert/wildcard.crt ] && [ -f /mnt/hdd/cert/wildcard.key ]; then
@@ -864,7 +924,6 @@ final_verification() {
     echo ""
     kubectl get ingressroute -A
 
-    # Adăugare în /etc/hosts
     sudo tee -a /etc/hosts << EOF12
 ${NODE_IP} traefik.aalto.md
 ${NODE_IP} adguard.aalto.md
@@ -900,93 +959,107 @@ EOF12
 }
 
 # ============================================
+# STATUS CLUSTER
+# ============================================
+show_status() {
+    print_header "STATUS CLUSTER"
+    echo "=== Noduri ==="
+    kubectl get nodes -o wide 2>/dev/null || echo "❌ Clusterul nu rulează"
+    echo ""
+    echo "=== Pod-uri ==="
+    kubectl get pods -A 2>/dev/null || echo "❌ Clusterul nu rulează"
+    echo ""
+    echo "=== Servicii ==="
+    kubectl get svc -A 2>/dev/null || echo "❌ Clusterul nu rulează"
+    echo ""
+}
+
+show_credentials() {
+    if [ -f /root/k8s-credentials.txt ]; then
+        print_header "CREDENȚIALE"
+        cat /root/k8s-credentials.txt
+    else
+        print_error "Fișierul /root/k8s-credentials.txt nu există."
+    fi
+    echo ""
+}
+
+# ============================================
 # MENIU PRINCIPAL
 # ============================================
 show_menu() {
     clear
     print_header "K3S CLUSTER MANAGER"
     echo ""
-    echo "  1. 📦 Instalare completă (K3s + Toate serviciile)"
-    echo "  2. ⚙️  Instalare doar K3s (Kubernetes)"
-    echo "  3. 🔧 Instalare doar Traefik Dashboard"
-    echo "  4. 🗑️  Ștergere completă (curăță tot)"
-    echo "  5. 📊 Status cluster"
-    echo "  6. 🔑 Afișează credențiale"
     echo "  0. 🚪 Ieșire"
+    echo "  1. 🗑️  Ștergere completă (curăță tot)"
+    echo "  2. 📦 Instalare completă (K3s + toate serviciile)"
+    echo "  3. ⚙️  Instalare doar K3s (Kubernetes + Helm + Headlamp)"
+    echo "  4. 🔧 Instalare doar Traefik Dashboard"
+    echo "  5. 🛡️  Instalare doar AdGuard"
+    echo "  6. 🔐 Instalare doar Vaultwarden"
+    echo "  7. 💾 Instalare doar MinIO"
+    echo "  8. 📊 Status cluster"
+    echo "  9. 🔑 Afișează credențiale"
     echo ""
-    echo -n "Alege o opțiune [0-6]: "
+    echo -n "Alege o opțiune [0-9]: "
 }
 
 while true; do
     show_menu
     read -r choice
     case $choice in
-        1)
-            install_full
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        2)
-            install_k3s_only
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        3)
-            print_header "INSTALARE TRAEFIK DASHBOARD"
-            # Setează NODE_IP pentru funcții
-            NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
-            if [ -z "$NODE_IP" ]; then
-                NODE_IP=$(hostname -I | awk '{print $1}')
-            fi
-            # Refolosește parola dacă există
-            if [ -f /root/k8s-credentials.txt ]; then
-                TRAEFIK_PASSWORD=$(grep -A1 "TRAEFIK DASHBOARD" /root/k8s-credentials.txt | grep "Password:" | awk '{print $2}' | head -1)
-            fi
-            if [ -z "$TRAEFIK_PASSWORD" ]; then
-                TRAEFIK_PASSWORD=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9!?%=' | head -c 16)
-            fi
-            install_traefik
-            print_success "Traefik Dashboard instalat!"
-            echo "🔑 Parolă: ${TRAEFIK_PASSWORD}"
-            echo "🌐 Accesează: https://traefik.aalto.md/dashboard/"
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        4)
-            uninstall_full
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        5)
-            print_header "STATUS CLUSTER"
-            echo "=== Noduri ==="
-            kubectl get nodes -o wide 2>/dev/null || echo "❌ Clusterul nu rulează"
-            echo ""
-            echo "=== Pod-uri ==="
-            kubectl get pods -A 2>/dev/null || echo "❌ Clusterul nu rulează"
-            echo ""
-            echo "=== Servicii ==="
-            kubectl get svc -A 2>/dev/null || echo "❌ Clusterul nu rulează"
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        6)
-            if [ -f /root/k8s-credentials.txt ]; then
-                print_header "CREDENȚIALE"
-                cat /root/k8s-credentials.txt
-            else
-                print_error "Fișierul /root/k8s-credentials.txt nu există."
-            fi
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
         0)
             print_info "La revedere!"
             exit 0
             ;;
+        1)
+            uninstall_full
+            echo ""
+            read -p "Apasă Enter pentru a continua..."
+            ;;
+        2)
+            install_full
+            echo ""
+            read -p "Apasă Enter pentru a continua..."
+            ;;
+        3)
+            install_k3s_only
+            echo ""
+            read -p "Apasă Enter pentru a continua..."
+            ;;
+        4)
+            install_traefik_only
+            echo ""
+            read -p "Apasă Enter pentru a continua..."
+            ;;
+        5)
+            install_adguard_only
+            echo ""
+            read -p "Apasă Enter pentru a continua..."
+            ;;
+        6)
+            install_vaultwarden_only
+            echo ""
+            read -p "Apasă Enter pentru a continua..."
+            ;;
+        7)
+            install_minio_only
+            echo ""
+            read -p "Apasă Enter pentru a continua..."
+            ;;
+        8)
+            show_status
+            read -p "Apasă Enter pentru a continua..."
+            ;;
+        9)
+            show_credentials
+            read -p "Apasă Enter pentru a continua..."
+            ;;
         *)
-            print_error "Opțiune invalidă. Alege 0-6."
+            print_error "Opțiune invalidă. Alege 0-9."
             sleep 2
             ;;
     esac
 done
+
