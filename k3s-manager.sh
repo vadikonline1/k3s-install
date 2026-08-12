@@ -36,17 +36,32 @@ print_info() {
 }
 
 # ============================================
-# FUNCȚII DE INSTALARE COMPONENTE
+# FUNCȚII DE BAZĂ
 # ============================================
 
-# --- Asigură directoarele necesare ---
 ensure_directories() {
     mkdir -p /mnt/hdd/k8s/{traefik,adguard,vaultwarden,minio,headlamp}
     mkdir -p /mnt/hdd/cert
     mkdir -p /var/lib/rancher/k3s/server/manifests/
 }
 
-# --- Instalare K3s (separată) ---
+install_traefik_crds() {
+    echo "=== Verificare/Instalare CRD-uri Traefik ==="
+    if ! kubectl get crd 2>/dev/null | grep -q ingressroutes.traefik.io; then
+        echo "Instalez CRD-urile Traefik..."
+        kubectl apply -f https://raw.githubusercontent.com/traefik/traefik/v3.3/docs/content/reference/dynamic-configuration/kubernetes-crd.yml 2>/dev/null || \
+        kubectl apply -f https://raw.githubusercontent.com/traefik/traefik/v3.0/pkg/provider/kubernetes/crd/traefik.io_ingressroutes.yaml
+        sleep 5
+        print_success "CRD-uri Traefik instalate"
+    else
+        print_info "CRD-urile Traefik sunt deja instalate"
+    fi
+}
+
+# ============================================
+# FUNCȚII DE INSTALARE COMPONENTE
+# ============================================
+
 install_k3s_only() {
     print_header "INSTALARE K3S (doar Kubernetes)"
     echo "Data: $(date)"
@@ -64,67 +79,120 @@ install_k3s_only() {
     # Instalare pachete necesare
     dnf install -y tar git openssl curl mc nano jq
 
-    # Asigură directoarele
     ensure_directories
-
-    # Configurare K3s
     configure_k3s
-
-    # Instalare K3s
     install_k3s
-
-    # Configurare kubectl
     configure_kubectl
-
-    # Instalare Helm
     install_helm
 
-    # Instalare Headlamp (pentru management UI)
-    install_headlamp
-
-    print_success "K3s + Helm + Headlamp instalat cu succes!"
+    print_success "K3s + Helm instalat cu succes!"
     echo ""
     echo "📋 Pentru a verifica:"
     echo "   kubectl get nodes"
     echo "   kubectl get pods -A"
-    echo "   Headlamp: https://dashboard.aalto.md"
 }
 
-# --- Instalare completă ---
+install_headlamp_only() {
+    print_header "INSTALARE DOAR HEADLAMP"
+    ensure_directories
+    install_traefik_crds
+    install_headlamp
+    print_success "Headlamp instalat cu succes!"
+    echo ""
+    echo "🌐 Accesează: https://dashboard.aalto.md"
+    echo "🔑 Token: kubectl create token my-headlamp -n kube-system"
+}
+
+install_traefik_only() {
+    print_header "INSTALARE DOAR TRAEFIK DASHBOARD"
+    ensure_directories
+    install_traefik_crds
+
+    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    [ -z "$NODE_IP" ] && NODE_IP=$(hostname -I | awk '{print $1}')
+
+    if [ -f /root/k8s-credentials.txt ]; then
+        TRAEFIK_PASSWORD=$(grep -A1 "TRAEFIK DASHBOARD" /root/k8s-credentials.txt | grep "Password:" | awk '{print $2}' | head -1)
+    fi
+    [ -z "$TRAEFIK_PASSWORD" ] && TRAEFIK_PASSWORD=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9!?%=' | head -c 16)
+
+    install_traefik
+    print_success "Traefik Dashboard instalat!"
+    echo "🔑 Parolă: ${TRAEFIK_PASSWORD}"
+    echo "🌐 Accesează: https://traefik.aalto.md/dashboard/"
+}
+
+install_adguard_only() {
+    print_header "INSTALARE DOAR ADGUARD"
+    ensure_directories
+    install_traefik_crds
+    install_adguard
+    print_success "AdGuard instalat!"
+    echo "🌐 Accesează: https://adguard.aalto.md"
+}
+
+install_vaultwarden_only() {
+    print_header "INSTALARE DOAR VAULTWARDEN"
+    ensure_directories
+    install_traefik_crds
+
+    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    [ -z "$NODE_IP" ] && NODE_IP=$(hostname -I | awk '{print $1}')
+
+    if [ -f /root/k8s-credentials.txt ]; then
+        VAULTWARDEN_ADMIN_TOKEN=$(grep -A1 "VAULTWARDEN" /root/k8s-credentials.txt | grep "Admin Token:" | awk '{print $3}' | head -1)
+    fi
+    [ -z "$VAULTWARDEN_ADMIN_TOKEN" ] && VAULTWARDEN_ADMIN_TOKEN=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
+
+    install_vaultwarden
+    print_success "Vaultwarden instalat!"
+    echo "🔑 Admin Token: ${VAULTWARDEN_ADMIN_TOKEN}"
+    echo "🌐 Accesează: https://vault.aalto.md"
+}
+
+install_minio_only() {
+    print_header "INSTALARE DOAR MINIO"
+    ensure_directories
+    install_traefik_crds
+
+    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    [ -z "$NODE_IP" ] && NODE_IP=$(hostname -I | awk '{print $1}')
+
+    if [ -f /root/k8s-credentials.txt ]; then
+        MINIO_PASSWORD=$(grep -A1 "MINIO" /root/k8s-credentials.txt | grep "Root Password:" | awk '{print $3}' | head -1)
+    fi
+    [ -z "$MINIO_PASSWORD" ] && MINIO_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9!?%=' | head -c 32)
+
+    install_minio
+    print_success "MinIO instalat!"
+    echo "🔑 Root Password: ${MINIO_PASSWORD}"
+    echo "🌐 Accesează: https://minio.aalto.md (API) / https://minio-console.aalto.md (Console)"
+}
+
 install_full() {
     print_header "INSTALARE COMPLETĂ K3S CLUSTER"
     echo "Data: $(date)"
     echo "Host: $(hostname -f)"
     echo ""
 
-    # Detectare IP automat
-    echo "=== Detectare IP automat ==="
     NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
-    if [ -z "$NODE_IP" ]; then
-        NODE_IP=$(hostname -I | awk '{print $1}')
-    fi
+    [ -z "$NODE_IP" ] && NODE_IP=$(hostname -I | awk '{print $1}')
     echo "✅ IP detectat: $NODE_IP"
 
-    # Instalare pachete necesare
     dnf install -y tar git openssl curl mc nano httpd-tools jq
 
-    # Asigură directoarele
     ensure_directories
-
-    # Generare parole
     generate_credentials
 
-    # Configurare nftables
     configure_nftables
     configure_nftables_backup
 
-    # Configurare K3s
     configure_k3s
     install_k3s
     configure_kubectl
     install_helm
 
-    # Instalare servicii
+    install_traefik_crds
     install_traefik
     install_adguard
     install_vaultwarden
@@ -132,104 +200,15 @@ install_full() {
     install_headlamp
     create_tls_secrets
 
-    # Verificare finală
     final_verification
-
     print_success "Instalare completă!"
 }
 
-# --- Instalare doar Traefik ---
-install_traefik_only() {
-    print_header "INSTALARE DOAR TRAEFIK DASHBOARD"
-    
-    ensure_directories
-    
-    # Setează NODE_IP
-    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
-    if [ -z "$NODE_IP" ]; then
-        NODE_IP=$(hostname -I | awk '{print $1}')
-    fi
-    
-    # Refolosește parola dacă există
-    if [ -f /root/k8s-credentials.txt ]; then
-        TRAEFIK_PASSWORD=$(grep -A1 "TRAEFIK DASHBOARD" /root/k8s-credentials.txt | grep "Password:" | awk '{print $2}' | head -1)
-    fi
-    if [ -z "$TRAEFIK_PASSWORD" ]; then
-        TRAEFIK_PASSWORD=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9!?%=' | head -c 16)
-    fi
-    
-    install_traefik
-    print_success "Traefik Dashboard instalat!"
-    echo "🔑 Parolă: ${TRAEFIK_PASSWORD}"
-    echo "🌐 Accesează: https://traefik.aalto.md/dashboard/"
-}
-
-# --- Instalare doar AdGuard ---
-install_adguard_only() {
-    print_header "INSTALARE DOAR ADGUARD"
-    ensure_directories
-    
-    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
-    if [ -z "$NODE_IP" ]; then
-        NODE_IP=$(hostname -I | awk '{print $1}')
-    fi
-    install_adguard
-    print_success "AdGuard instalat!"
-    echo "🌐 Accesează: https://adguard.aalto.md"
-}
-
-# --- Instalare doar Vaultwarden ---
-install_vaultwarden_only() {
-    print_header "INSTALARE DOAR VAULTWARDEN"
-    ensure_directories
-    
-    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
-    if [ -z "$NODE_IP" ]; then
-        NODE_IP=$(hostname -I | awk '{print $1}')
-    fi
-    
-    if [ -f /root/k8s-credentials.txt ]; then
-        VAULTWARDEN_ADMIN_TOKEN=$(grep -A1 "VAULTWARDEN" /root/k8s-credentials.txt | grep "Admin Token:" | awk '{print $3}' | head -1)
-    fi
-    if [ -z "$VAULTWARDEN_ADMIN_TOKEN" ]; then
-        VAULTWARDEN_ADMIN_TOKEN=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
-    fi
-    
-    install_vaultwarden
-    print_success "Vaultwarden instalat!"
-    echo "🔑 Admin Token: ${VAULTWARDEN_ADMIN_TOKEN}"
-    echo "🌐 Accesează: https://vault.aalto.md"
-}
-
-# --- Instalare doar MinIO ---
-install_minio_only() {
-    print_header "INSTALARE DOAR MINIO"
-    ensure_directories
-    
-    NODE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
-    if [ -z "$NODE_IP" ]; then
-        NODE_IP=$(hostname -I | awk '{print $1}')
-    fi
-    
-    if [ -f /root/k8s-credentials.txt ]; then
-        MINIO_PASSWORD=$(grep -A1 "MINIO" /root/k8s-credentials.txt | grep "Root Password:" | awk '{print $3}' | head -1)
-    fi
-    if [ -z "$MINIO_PASSWORD" ]; then
-        MINIO_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9!?%=' | head -c 32)
-    fi
-    
-    install_minio
-    print_success "MinIO instalat!"
-    echo "🔑 Root Password: ${MINIO_PASSWORD}"
-    echo "🌐 Accesează: https://minio.aalto.md (API) / https://minio-console.aalto.md (Console)"
-}
-
 # ============================================
-# FUNCȚIA DE ȘTERGERE COMPLETĂ
+# FUNCȚIA DE ȘTERGERE
 # ============================================
 uninstall_full() {
     print_header "ȘTERGERE COMPLETĂ K3S CLUSTER"
-    
     read -p "⚠️  Ești sigur că vrei să ștergi complet clusterul? (da/nu): " confirm
     if [ "$confirm" != "da" ]; then
         print_info "Operațiune anulată."
@@ -237,23 +216,20 @@ uninstall_full() {
     fi
 
     echo "=== Ștergere K3s și toate resursele ==="
-    
     sudo systemctl stop k3s 2>/dev/null || true
     sudo systemctl stop nftables 2>/dev/null || true
-    
-    if [ -f /usr/local/bin/k3s-uninstall.sh ]; then
-        sudo /usr/local/bin/k3s-uninstall.sh || true
-    fi
-    
+
+    [ -f /usr/local/bin/k3s-uninstall.sh ] && sudo /usr/local/bin/k3s-uninstall.sh || true
+
     sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /mnt/hdd/k8s /mnt/hdd/cert /root/k8s-credentials.txt /root/headlamp-token.txt
     sudo rm -f /etc/nftables/nftables.conf /etc/sysconfig/nftables.conf
     sudo rm -f /usr/local/bin/nftables-backup.sh
     sudo rm -rf /var/lib/rancher/k3s/server/manifests/traefik-dashboard-config.yaml
-    
+
     sudo systemctl reset-failed k3s.service 2>/dev/null || true
-    
+
     sudo crontab -l 2>/dev/null | grep -v "nftables-backup.sh" | sudo crontab - 2>/dev/null || true
-    
+
     print_success "Cluster șters complet. Serverul este curat."
 }
 
@@ -393,128 +369,102 @@ install_helm() {
 }
 
 install_traefik() {
-    echo "=== Instalare Traefik Dashboard ==="
-    
+    echo "=== Instalare Traefik cu certificat personalizat ==="
+
     helm repo add traefik https://traefik.github.io/charts 2>/dev/null || true
     helm repo update
 
     kubectl create namespace kube-system 2>/dev/null || true
 
+    # Creează secretul TLS în namespace-ul kube-system
     if [ -f /mnt/hdd/cert/wildcard.crt ] && [ -f /mnt/hdd/cert/wildcard.key ]; then
-        kubectl create secret tls traefik-dashboard-tls \
+        kubectl create secret tls wildcard-tls \
             --cert=/mnt/hdd/cert/wildcard.crt \
             --key=/mnt/hdd/cert/wildcard.key \
             -n kube-system 2>/dev/null || print_info "Secretul TLS există deja"
+    else
+        print_error "Certificatele nu au fost găsite în /mnt/hdd/cert/"
+        return 1
     fi
 
-    sudo mkdir -p /var/lib/rancher/k3s/server/manifests/
-    sudo tee /var/lib/rancher/k3s/server/manifests/traefik-dashboard-config.yaml << 'EOF'
-apiVersion: helm.cattle.io/v1
-kind: HelmChartConfig
-metadata:
-  name: traefik
-  namespace: kube-system
-spec:
-  valuesContent: |-
-    api:
-      dashboard: true
-      insecure: false
-    logs:
-      general:
-        level: INFO
-      access:
-        enabled: true
+    # Creează fișierul values.yaml pentru Traefik cu TLSStore
+    cat > /mnt/hdd/k8s/traefik/traefik-values.yaml << 'EOF'
+installCRDs: true
+
+ports:
+  web:
+    port: 80
+    nodePort: 30080
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    port: 443
+    nodePort: 30443
+
+api:
+  dashboard: true
+  insecure: false
+
+ingressRoute:
+  dashboard:
+    enabled: true
+    matchRule: Host(`traefik.aalto.md`)
+    entryPoints:
+      - websecure
+    middlewares:
+      - name: dashboard-auth
+
+tlsStore:
+  default:
+    defaultCertificate:
+      secretName: wildcard-tls
+
+extraObjects:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: dashboard-auth-secret
+    type: kubernetes.io/basic-auth
+    stringData:
+      username: admin
+      password: "${TRAEFIK_PASSWORD}"
+  - apiVersion: traefik.io/v1alpha1
+    kind: Middleware
+    metadata:
+      name: dashboard-auth
+    spec:
+      basicAuth:
+        secret: dashboard-auth-secret
+
+providers:
+  kubernetesCRD:
+    enabled: true
+  kubernetesIngress:
+    enabled: true
+
+log:
+  level: INFO
+accessLog:
+  enabled: true
+
+service:
+  type: NodePort
+  nodePorts:
+    web: 30080
+    websecure: 30443
 EOF
 
-    kubectl apply -f /var/lib/rancher/k3s/server/manifests/traefik-dashboard-config.yaml 2>/dev/null || true
-    kubectl rollout status deployment/traefik -n kube-system 2>/dev/null || true
+    # Instalează Traefik
+    helm upgrade --install traefik traefik/traefik \
+        -f /mnt/hdd/k8s/traefik/traefik-values.yaml \
+        -n kube-system \
+        --wait
 
-    htpasswd -nbB admin "${TRAEFIK_PASSWORD}" > /tmp/dashboard-auth.txt
-    kubectl create secret generic traefik-dashboard-auth \
-        --from-file=users=/tmp/dashboard-auth.txt \
-        -n kube-system 2>/dev/null || true
-    rm /tmp/dashboard-auth.txt
-
-    cat > /tmp/traefik-middleware.yaml << 'EOF'
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: dashboard-auth
-  namespace: kube-system
-spec:
-  basicAuth:
-    secret: traefik-dashboard-auth
-    removeHeader: true
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: dashboard-ip-allowlist
-  namespace: kube-system
-spec:
-  ipAllowList:
-    sourceRange:
-      - "10.0.0.0/8"
-      - "172.16.0.0/12"
-      - "192.168.0.0/16"
-      - "127.0.0.1/32"
-EOF
-    kubectl apply -f /tmp/traefik-middleware.yaml
-
-    cat > /tmp/traefik-ingressroute.yaml << 'EOF'
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: traefik-dashboard-https
-  namespace: kube-system
-spec:
-  entryPoints:
-    - websecure
-  routes:
-    - kind: Rule
-      match: Host(`traefik.aalto.md`) && (PathPrefix(`/dashboard`) || PathPrefix(`/api`))
-      middlewares:
-        - name: dashboard-auth
-          namespace: kube-system
-        - name: dashboard-ip-allowlist
-          namespace: kube-system
-      services:
-        - name: api@internal
-          kind: TraefikService
-  tls:
-    secretName: traefik-dashboard-tls
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: https-redirect
-  namespace: kube-system
-spec:
-  redirectScheme:
-    scheme: https
-    permanent: true
----
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: traefik-dashboard-http
-  namespace: kube-system
-spec:
-  entryPoints:
-    - web
-  routes:
-    - kind: Rule
-      match: Host(`traefik.aalto.md`)
-      middlewares:
-        - name: https-redirect
-          namespace: kube-system
-      services:
-        - name: api@internal
-          kind: TraefikService
-EOF
-    kubectl apply -f /tmp/traefik-ingressroute.yaml
-
-    print_success "Traefik configurat în namespace-ul kube-system"
+    print_success "Traefik instalat în namespace-ul kube-system"
 }
 
 install_adguard() {
@@ -790,16 +740,14 @@ install_headlamp() {
     echo "=== Instalare Headlamp ==="
     helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/ 2>/dev/null || true
     helm repo update
-    
+
     if helm list -n kube-system | grep -q my-headlamp; then
         print_info "Headlamp există deja"
     else
         helm install my-headlamp headlamp/headlamp --namespace kube-system 2>/dev/null || true
     fi
 
-    # Asigură că directorul există
     mkdir -p /mnt/hdd/k8s/headlamp
-    
     cat > /mnt/hdd/k8s/headlamp/headlamp-ingress.yaml << 'EOF11'
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -920,7 +868,7 @@ create_tls_secrets() {
             --cert=/mnt/hdd/cert/wildcard.crt \
             --key=/mnt/hdd/cert/wildcard.key \
             -n kube-system 2>/dev/null || print_info "Secretul TLS există deja în kube-system"
-            
+
         kubectl create secret tls wildcard-tls \
             --cert=/mnt/hdd/cert/wildcard.crt \
             --key=/mnt/hdd/cert/wildcard.key \
@@ -1009,72 +957,36 @@ show_menu() {
     echo "  0. 🚪 Ieșire"
     echo "  1. 🗑️  Ștergere completă (curăță tot)"
     echo "  2. 📦 Instalare completă (K3s + toate serviciile)"
-    echo "  3. ⚙️  Instalare doar K3s (Kubernetes + Helm + Headlamp)"
-    echo "  4. 🔧 Instalare doar Traefik Dashboard"
-    echo "  5. 🛡️  Instalare doar AdGuard"
-    echo "  6. 🔐 Instalare doar Vaultwarden"
-    echo "  7. 💾 Instalare doar MinIO"
-    echo "  8. 📊 Status cluster"
-    echo "  9. 🔑 Afișează credențiale"
+    echo "  3. ⚙️  Instalare doar K3s (Kubernetes + Helm)"
+    echo "  4. 🖥️  Instalare doar Headlamp (Dashboard UI)"
+    echo "  5. 🔧 Instalare doar Traefik Dashboard"
+    echo "  6. 🛡️  Instalare doar AdGuard"
+    echo "  7. 🔐 Instalare doar Vaultwarden"
+    echo "  8. 💾 Instalare doar MinIO"
+    echo "  9. 📊 Status cluster"
+    echo " 10. 🔑 Afișează credențiale"
     echo ""
-    echo -n "Alege o opțiune [0-9]: "
+    echo -n "Alege o opțiune [0-10]: "
 }
 
+# ============================================
+# BUCLĂ PRINCIPALĂ
+# ============================================
 while true; do
     show_menu
     read -r choice
     case $choice in
-        0)
-            print_info "La revedere!"
-            exit 0
-            ;;
-        1)
-            uninstall_full
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        2)
-            install_full
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        3)
-            install_k3s_only
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        4)
-            install_traefik_only
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        5)
-            install_adguard_only
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        6)
-            install_vaultwarden_only
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        7)
-            install_minio_only
-            echo ""
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        8)
-            show_status
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        9)
-            show_credentials
-            read -p "Apasă Enter pentru a continua..."
-            ;;
-        *)
-            print_error "Opțiune invalidă. Alege 0-9."
-            sleep 2
-            ;;
+        0) print_info "La revedere!"; exit 0 ;;
+        1) uninstall_full; echo ""; read -p "Apasă Enter pentru a continua..." ;;
+        2) install_full; echo ""; read -p "Apasă Enter pentru a continua..." ;;
+        3) install_k3s_only; echo ""; read -p "Apasă Enter pentru a continua..." ;;
+        4) install_headlamp_only; echo ""; read -p "Apasă Enter pentru a continua..." ;;
+        5) install_traefik_only; echo ""; read -p "Apasă Enter pentru a continua..." ;;
+        6) install_adguard_only; echo ""; read -p "Apasă Enter pentru a continua..." ;;
+        7) install_vaultwarden_only; echo ""; read -p "Apasă Enter pentru a continua..." ;;
+        8) install_minio_only; echo ""; read -p "Apasă Enter pentru a continua..." ;;
+        9) show_status; read -p "Apasă Enter pentru a continua..." ;;
+        10) show_credentials; read -p "Apasă Enter pentru a continua..." ;;
+        *) print_error "Opțiune invalidă. Alege 0-10."; sleep 2 ;;
     esac
 done
-
