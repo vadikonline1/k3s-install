@@ -9,4 +9,9 @@ chmod +x /root/k3s-install.sh
 ```
 
 # 3. Dacă faceți modificări și rulați din nou
-/root/k3s-install.sh  # Detectează automat și face upgrade
+```
+chmod +x /root/k3s-manager.sh
+```
+```
+/root/k3s-manager.sh
+```
