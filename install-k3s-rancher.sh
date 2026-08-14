@@ -101,69 +101,6 @@ cleanup_on_error() {
 
 trap cleanup_on_error ERR
 
-# Function to check if a version satisfies a constraint
-# Uses semver comparison logic
-version_satisfies_constraint() {
-    local version="$1"
-    local constraint="$2"
-    
-    # If no constraint, assume compatible
-    if [[ -z "${constraint}" ]]; then
-        return 0
-    fi
-    
-    # Remove v prefix
-    version="${version#v}"
-    constraint="${constraint#v}"
-    
-    # Handle common constraint patterns:
-    # - ">= 1.21.0-0 < 1.36.0-0"
-    # - ">= 1.21.0-0 < 1.35.0-0"
-    # - ">= 1.21.0-0"
-    
-    # Extract min and max versions
-    local min_version=""
-    local max_version=""
-    
-    # Extract version numbers from constraint
-    # This handles patterns like: ">= 1.21.0-0 < 1.36.0-0"
-    if [[ "${constraint}" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-        min_version="${BASH_REMATCH[1]}"
-    fi
-    
-    # Extract max version after <
-    if [[ "${constraint}" =~ \<[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-        max_version="${BASH_REMATCH[1]}"
-    fi
-    
-    # If no constraint parts found, assume compatible
-    if [[ -z "${min_version}" && -z "${max_version}" ]]; then
-        return 0
-    fi
-    
-    # Check min version
-    if [[ -n "${min_version}" ]]; then
-        # Compare versions using sort -V
-        if ! printf "%s\n%s\n" "${min_version}" "${version}" | sort -V -C 2>/dev/null; then
-            return 1
-        fi
-    fi
-    
-    # Check max version (exclusive)
-    if [[ -n "${max_version}" ]]; then
-        # Version must be < max_version (strictly less)
-        if ! printf "%s\n%s\n" "${version}" "${max_version}" | sort -V -C 2>/dev/null; then
-            return 1
-        fi
-        # Check if equal (not allowed for <)
-        if [[ "${version}" == "${max_version}" ]]; then
-            return 1
-        fi
-    fi
-    
-    return 0
-}
-
 # ------------------------------------------------------------
 # Root
 # ------------------------------------------------------------
@@ -334,21 +271,19 @@ chmod 600 "${K3S_DIR}/cert/wildcard.key"
 echo
 echo "Verific parola Rancher..."
 
+# Dacă fișierul există dar e corupt, îl ștergem și regenerăm
 if [[ -f "${RANCHER_PASSWORD_FILE}" ]]; then
-
-    RANCHER_PASSWORD="$(grep '^Password:' "${RANCHER_PASSWORD_FILE}" \
-        | head -1 \
-        | sed 's/^Password:[[:space:]]*//')"
-
+    RANCHER_PASSWORD="$(grep '^Password:' "${RANCHER_PASSWORD_FILE}" 2>/dev/null | head -1 | sed 's/^Password:[[:space:]]*//')"
+    
     if [[ -z "${RANCHER_PASSWORD}" ]]; then
-        echo "Fișierul de parolă există, dar parola nu poate fi citită."
-        exit 1
+        echo "Fișierul de parolă există dar este corupt. Regenerare..."
+        rm -f "${RANCHER_PASSWORD_FILE}"
+    else
+        echo "Folosesc parola Rancher existentă."
     fi
+fi
 
-    echo "Folosesc parola Rancher existentă."
-
-else
-
+if [[ ! -f "${RANCHER_PASSWORD_FILE}" ]]; then
     echo "Generez o nouă parolă Rancher..."
 
     RANCHER_PASSWORD="$(openssl rand -hex 24)"
@@ -380,7 +315,6 @@ Păstrează acest fișier în siguranță.
 EOF
 
     chmod 600 "${RANCHER_PASSWORD_FILE}"
-
 fi
 
 # ------------------------------------------------------------
@@ -578,18 +512,6 @@ helm search repo \
 
 # ------------------------------------------------------------
 # Find newest compatible Rancher
-#
-# Instead of hardcoding Kubernetes 1.35 or Rancher 2.14,
-# we check the kubeVersion constraint from each chart.
-#
-# This automatically handles:
-#
-# K3s 1.35 -> newest compatible Rancher
-# K3s 1.36 -> newest compatible Rancher
-# etc.
-#
-# CRITICAL FIX: We use `helm show chart` to get kubeVersion,
-# then compare it using semver logic.
 # ------------------------------------------------------------
 
 log "[9/15] Detectez cea mai nouă versiune Rancher compatibilă"
@@ -604,7 +526,10 @@ echo "Caut Rancher compatibil..."
 echo
 
 # Get all versions from repository
-mapfile -t RANCHER_VERSIONS < <(
+RANCHER_VERSIONS=()
+while IFS= read -r line; do
+    RANCHER_VERSIONS+=("$line")
+done < <(
     helm search repo \
         "${RANCHER_REPO}/rancher" \
         --versions \
@@ -612,9 +537,32 @@ mapfile -t RANCHER_VERSIONS < <(
         | awk 'NR > 1 {print $2}'
 )
 
-if [[ "${#RANCHER_VERSIONS[@]}" -eq 0 ]]; then
+if [[ ${#RANCHER_VERSIONS[@]} -eq 0 ]]; then
     error_exit "Nu am găsit versiuni Rancher în repository."
 fi
+
+# Function to check compatibility using helm template
+check_rancher_compatibility() {
+    local version="$1"
+    local kube_version="$2"
+    
+    # Try to template the chart with the given Kubernetes version
+    if helm template rancher-test \
+        "${RANCHER_REPO}/rancher" \
+        --version "${version}" \
+        --namespace cattle-system \
+        --kube-version "${kube_version}" \
+        --set "hostname=${RANCHER_HOSTNAME}" \
+        --set "replicas=1" \
+        --set "bootstrapPassword=test123" \
+        --set "ingress.tls.source=secret" \
+        --set "privateCA=false" \
+        >/dev/null 2>&1; then
+        return 0
+    else
+        return 1
+    fi
+}
 
 RANCHER_FOUND="false"
 
@@ -624,28 +572,8 @@ for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
 
     echo "Testez Rancher ${CANDIDATE_VERSION} ..."
 
-    # Get kubeVersion from chart
-    KUBE_VERSION_CONSTRAINT=""
-    KUBE_VERSION_CONSTRAINT="$(
-        helm show chart \
-            "${RANCHER_REPO}/rancher" \
-            --version "${CANDIDATE_VERSION}" \
-            2>/dev/null \
-        | grep -i '^kubeVersion:' \
-        | sed 's/^[kK][uU][bB][eE][vV][eE][rR][sS][iI][oO][nN]:[[:space:]]*//'
-    )"
-
-    if [[ -z "${KUBE_VERSION_CONSTRAINT}" ]]; then
-        echo "  ⚠ nu are kubeVersion definit - presupun compatibil"
-        RANCHER_VERSION="${CANDIDATE_VERSION}"
-        RANCHER_FOUND="true"
-        break
-    fi
-
-    echo "  kubeVersion: ${KUBE_VERSION_CONSTRAINT}"
-
-    # Check compatibility using the constraint
-    if version_satisfies_constraint "${KUBE_VERSION}" "${KUBE_VERSION_CONSTRAINT}"; then
+    # Try to template with the actual Kubernetes version
+    if check_rancher_compatibility "${CANDIDATE_VERSION}" "${KUBE_VERSION_SHORT}"; then
         RANCHER_VERSION="${CANDIDATE_VERSION}"
         RANCHER_FOUND="true"
         
@@ -657,16 +585,13 @@ for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
         echo "Kubernetes:"
         echo "  ${KUBE_SERVER_VERSION}"
         echo
-        echo "Kubernetes constraint:"
-        echo "  ${KUBE_VERSION_CONSTRAINT}"
-        echo
         echo "Rancher:"
         echo "  ${RANCHER_VERSION}"
         echo
         
         break
     else
-        echo "  ✗ incompatibil (kubeVersion: ${KUBE_VERSION_CONSTRAINT})"
+        echo "  ✗ incompatibil"
     fi
 
 done
@@ -685,10 +610,52 @@ if [[ "${RANCHER_FOUND}" != "true" ]]; then
 fi
 
 # ------------------------------------------------------------
+# Install cert-manager
+# ------------------------------------------------------------
+
+log "[10/15] Instalez cert-manager"
+
+# Install cert-manager CRDs and controller
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.crds.yaml
+
+# Add cert-manager repository
+helm repo add jetstack https://charts.jetstack.io --force-update
+helm repo update
+
+# Install cert-manager
+helm upgrade --install cert-manager jetstack/cert-manager \
+    --namespace cert-manager \
+    --create-namespace \
+    --version v1.14.5 \
+    --set installCRDs=false \
+    --wait \
+    --timeout 10m
+
+# Wait for cert-manager
+echo
+echo "Aștept cert-manager..."
+
+kubectl -n cert-manager rollout status \
+    deployment/cert-manager \
+    --timeout=300s || true
+
+kubectl -n cert-manager rollout status \
+    deployment/cert-manager-cainjector \
+    --timeout=300s || true
+
+kubectl -n cert-manager rollout status \
+    deployment/cert-manager-webhook \
+    --timeout=300s || true
+
+echo
+echo "Cert-manager pods:"
+kubectl get pods -n cert-manager
+
+# ------------------------------------------------------------
 # TLS secret for Traefik
 # ------------------------------------------------------------
 
-log "[10/15] Configurez Wildcard TLS"
+log "[11/15] Configurez Wildcard TLS"
 
 kubectl create namespace kube-system \
     --dry-run=client \
@@ -710,7 +677,7 @@ kubectl get secret wildcard-tls -n kube-system
 # Traefik configuration
 # ------------------------------------------------------------
 
-log "[11/15] Configurez Traefik"
+log "[12/15] Configurez Traefik"
 
 cat > "${K3S_DIR}/traefik/traefik-config.yaml" <<'EOF'
 apiVersion: helm.cattle.io/v1
@@ -759,7 +726,7 @@ kubectl get pods \
 # Rancher namespace
 # ------------------------------------------------------------
 
-log "[12/15] Pregătesc Rancher"
+log "[13/15] Pregătesc Rancher"
 
 kubectl create namespace cattle-system \
     --dry-run=client \
@@ -797,6 +764,10 @@ ingress:
   ingressClassName: traefik
 
 privateCA: false
+
+# Disable cert-manager since we use our own certificate
+certmanager:
+  enabled: false
 EOF
 
 chmod 600 "${K3S_DIR}/rancher/values.yaml"
@@ -805,7 +776,7 @@ chmod 600 "${K3S_DIR}/rancher/values.yaml"
 # Install Rancher
 # ------------------------------------------------------------
 
-log "[13/15] Instalez Rancher"
+log "[14/15] Instalez Rancher"
 
 echo
 echo "Rancher repository:"
@@ -860,7 +831,7 @@ fi
 # Wait Rancher
 # ------------------------------------------------------------
 
-log "[14/15] Aștept Rancher"
+log "[15/15] Aștept Rancher"
 
 echo
 
@@ -881,8 +852,6 @@ kubectl wait \
 # ------------------------------------------------------------
 # Save information
 # ------------------------------------------------------------
-
-log "[15/15] Salvez informațiile instalării"
 
 cat > "${RANCHER_INFO_FILE}" <<EOF
 ============================================================
@@ -1016,6 +985,17 @@ echo
 kubectl get pods \
     -n kube-system \
     -l app.kubernetes.io/name=traefik \
+    -o wide \
+    || true
+
+echo
+echo "============================================================"
+echo " CERT-MANAGER"
+echo "============================================================"
+echo
+
+kubectl get pods \
+    -n cert-manager \
     -o wide \
     || true
 
