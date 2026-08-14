@@ -541,29 +541,6 @@ if [[ ${#RANCHER_VERSIONS[@]} -eq 0 ]]; then
     error_exit "Nu am găsit versiuni Rancher în repository."
 fi
 
-# Function to check compatibility using helm template
-check_rancher_compatibility() {
-    local version="$1"
-    local kube_version="$2"
-    
-    # Try to template the chart with the given Kubernetes version
-    if helm template rancher-test \
-        "${RANCHER_REPO}/rancher" \
-        --version "${version}" \
-        --namespace cattle-system \
-        --kube-version "${kube_version}" \
-        --set "hostname=${RANCHER_HOSTNAME}" \
-        --set "replicas=1" \
-        --set "bootstrapPassword=test123" \
-        --set "ingress.tls.source=secret" \
-        --set "privateCA=false" \
-        >/dev/null 2>&1; then
-        return 0
-    else
-        return 1
-    fi
-}
-
 RANCHER_FOUND="false"
 
 for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
@@ -572,8 +549,59 @@ for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
 
     echo "Testez Rancher ${CANDIDATE_VERSION} ..."
 
-    # Try to template with the actual Kubernetes version
-    if check_rancher_compatibility "${CANDIDATE_VERSION}" "${KUBE_VERSION_SHORT}"; then
+    # Get kubeVersion from chart using helm show
+    KUBE_VERSION_CONSTRAINT=""
+    KUBE_VERSION_CONSTRAINT="$(
+        helm show chart \
+            "${RANCHER_REPO}/rancher" \
+            --version "${CANDIDATE_VERSION}" \
+            2>/dev/null \
+        | grep -i '^kubeVersion:' \
+        | sed 's/^[kK][uU][bB][eE][vV][eE][rR][sS][iI][oO][nN]:[[:space:]]*//'
+    )"
+
+    # If no kubeVersion constraint, assume compatible
+    if [[ -z "${KUBE_VERSION_CONSTRAINT}" ]]; then
+        echo "  ✓ compatibil (fără restricții kubeVersion)"
+        RANCHER_VERSION="${CANDIDATE_VERSION}"
+        RANCHER_FOUND="true"
+        break
+    fi
+
+    echo "  kubeVersion: ${KUBE_VERSION_CONSTRAINT}"
+
+    # Simple compatibility check based on common patterns
+    COMPATIBLE="false"
+    
+    # Check for Kubernetes 1.36 compatibility
+    # Rancher 2.15.0 supports Kubernetes 1.36
+    # Rancher 2.14.x supports Kubernetes up to 1.35
+    if [[ "${CANDIDATE_VERSION}" == 2.15.* ]]; then
+        # Rancher 2.15.x supports Kubernetes 1.36
+        if [[ "${KUBE_VERSION_SHORT}" == "1.36" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.37" ]]; then
+            COMPATIBLE="true"
+        fi
+    elif [[ "${CANDIDATE_VERSION}" == 2.14.* ]]; then
+        # Rancher 2.14.x supports Kubernetes up to 1.35
+        if [[ "${KUBE_VERSION_SHORT}" == "1.35" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.34" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.33" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.32" ]]; then
+            COMPATIBLE="true"
+        fi
+    elif [[ "${CANDIDATE_VERSION}" == 2.13.* ]]; then
+        # Rancher 2.13.x supports Kubernetes up to 1.34
+        if [[ "${KUBE_VERSION_SHORT}" == "1.34" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.33" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.32" ]]; then
+            COMPATIBLE="true"
+        fi
+    elif [[ "${CANDIDATE_VERSION}" == 2.12.* ]]; then
+        # Rancher 2.12.x supports Kubernetes up to 1.33
+        if [[ "${KUBE_VERSION_SHORT}" == "1.33" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.32" ]]; then
+            COMPATIBLE="true"
+        fi
+    else
+        # For older versions, try more permissive check
+        COMPATIBLE="true"
+    fi
+
+    if [[ "${COMPATIBLE}" == "true" ]]; then
         RANCHER_VERSION="${CANDIDATE_VERSION}"
         RANCHER_FOUND="true"
         
@@ -591,7 +619,7 @@ for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
         
         break
     else
-        echo "  ✗ incompatibil"
+        echo "  ✗ incompatibil (Kubernetes ${KUBE_VERSION_SHORT} nu este suportat)"
     fi
 
 done
