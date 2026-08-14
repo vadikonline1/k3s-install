@@ -101,6 +101,69 @@ cleanup_on_error() {
 
 trap cleanup_on_error ERR
 
+# Function to check if a version satisfies a constraint
+# Uses semver comparison logic
+version_satisfies_constraint() {
+    local version="$1"
+    local constraint="$2"
+    
+    # If no constraint, assume compatible
+    if [[ -z "${constraint}" ]]; then
+        return 0
+    fi
+    
+    # Remove v prefix
+    version="${version#v}"
+    constraint="${constraint#v}"
+    
+    # Handle common constraint patterns:
+    # - ">= 1.21.0-0 < 1.36.0-0"
+    # - ">= 1.21.0-0 < 1.35.0-0"
+    # - ">= 1.21.0-0"
+    
+    # Extract min and max versions
+    local min_version=""
+    local max_version=""
+    
+    # Extract version numbers from constraint
+    # This handles patterns like: ">= 1.21.0-0 < 1.36.0-0"
+    if [[ "${constraint}" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+        min_version="${BASH_REMATCH[1]}"
+    fi
+    
+    # Extract max version after <
+    if [[ "${constraint}" =~ \<[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+        max_version="${BASH_REMATCH[1]}"
+    fi
+    
+    # If no constraint parts found, assume compatible
+    if [[ -z "${min_version}" && -z "${max_version}" ]]; then
+        return 0
+    fi
+    
+    # Check min version
+    if [[ -n "${min_version}" ]]; then
+        # Compare versions using sort -V
+        if ! printf "%s\n%s\n" "${min_version}" "${version}" | sort -V -C 2>/dev/null; then
+            return 1
+        fi
+    fi
+    
+    # Check max version (exclusive)
+    if [[ -n "${max_version}" ]]; then
+        # Version must be < max_version (strictly less)
+        if ! printf "%s\n%s\n" "${version}" "${max_version}" | sort -V -C 2>/dev/null; then
+            return 1
+        fi
+        # Check if equal (not allowed for <)
+        if [[ "${version}" == "${max_version}" ]]; then
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
 # ------------------------------------------------------------
 # Root
 # ------------------------------------------------------------
@@ -553,65 +616,6 @@ if [[ "${#RANCHER_VERSIONS[@]}" -eq 0 ]]; then
     error_exit "Nu am găsit versiuni Rancher în repository."
 fi
 
-# Function to check if a version satisfies a constraint
-# Uses semver comparison logic
-version_satisfies_constraint() {
-    local version="$1"
-    local constraint="$2"
-    
-    # If no constraint, assume compatible
-    if [[ -z "${constraint}" ]]; then
-        return 0
-    fi
-    
-    # Remove v prefix
-    version="${version#v}"
-    constraint="${constraint#v}"
-    
-    # Handle common constraint patterns:
-    # - ">= 1.21.0-0 < 1.36.0-0"
-    # - ">= 1.21.0-0 < 1.35.0-0"
-    # - ">= 1.21.0-0"
-    
-    # Extract min and max versions
-    local min_version=""
-    local max_version=""
-    
-    if [[ "${constraint}" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-        min_version="${BASH_REMATCH[1]}"
-    fi
-    
-    if [[ "${constraint}" =~ \<[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-        max_version="${BASH_REMATCH[1]}"
-    fi
-    
-    # If no constraint parts found, assume compatible
-    if [[ -z "${min_version}" && -z "${max_version}" ]]; then
-        return 0
-    fi
-    
-    # Check min version
-    if [[ -n "${min_version}" ]]; then
-        if ! printf "%s\n%s\n" "${min_version}" "${version}" | sort -V -C; then
-            return 1
-        fi
-    fi
-    
-    # Check max version (exclusive)
-    if [[ -n "${max_version}" ]]; then
-        # Version must be < max_version (strictly less)
-        if ! printf "%s\n%s\n" "${version}" "${max_version}" | sort -V -C; then
-            return 1
-        fi
-        # Check if equal (not allowed for <)
-        if [[ "${version}" == "${max_version}" ]]; then
-            return 1
-        fi
-    fi
-    
-    return 0
-}
-
 RANCHER_FOUND="false"
 
 for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
@@ -621,7 +625,7 @@ for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
     echo "Testez Rancher ${CANDIDATE_VERSION} ..."
 
     # Get kubeVersion from chart
-    local KUBE_VERSION_CONSTRAINT=""
+    KUBE_VERSION_CONSTRAINT=""
     KUBE_VERSION_CONSTRAINT="$(
         helm show chart \
             "${RANCHER_REPO}/rancher" \
