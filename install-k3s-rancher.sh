@@ -17,6 +17,7 @@ set -Eeuo pipefail
 #
 # DNS:
 #   dashboard.aalto.md -> IP server K3s
+#   traefik.aalto.md  -> IP server K3s
 #
 # Certificate:
 #   /mnt/hdd/cert/wildcard.crt
@@ -41,6 +42,7 @@ CERT_FILE="${CERT_DIR}/wildcard.crt"
 KEY_FILE="${CERT_DIR}/wildcard.key"
 
 RANCHER_HOSTNAME="dashboard.aalto.md"
+TRAEFIK_HOSTNAME="traefik.aalto.md"
 
 # K3s channel
 K3S_CHANNEL="latest"
@@ -127,6 +129,9 @@ echo
 echo "Rancher hostname:"
 echo "  https://${RANCHER_HOSTNAME}"
 echo
+echo "Traefik hostname:"
+echo "  https://${TRAEFIK_HOSTNAME}"
+echo
 
 # ------------------------------------------------------------
 # Verify certificates
@@ -148,7 +153,7 @@ fi
 # Detect OS/package manager
 # ------------------------------------------------------------
 
-log "[1/15] Detectare sistem"
+log "[1/16] Detectare sistem"
 
 if command -v dnf >/dev/null 2>&1; then
     PKG="dnf"
@@ -166,7 +171,7 @@ echo "Package manager: ${PKG}"
 # Install required packages
 # ------------------------------------------------------------
 
-log "[2/15] Instalare pachete necesare"
+log "[2/16] Instalare pachete necesare"
 
 if [[ "${PKG}" == "dnf" || "${PKG}" == "yum" ]]; then
 
@@ -226,7 +231,7 @@ fi
 # Firewall
 # ------------------------------------------------------------
 
-log "[3/15] Configurare firewall"
+log "[3/16] Configurare firewall"
 
 if systemctl list-unit-files 2>/dev/null | grep -q '^firewalld.service'; then
 
@@ -240,7 +245,7 @@ fi
 # Directories
 # ------------------------------------------------------------
 
-log "[4/15] Pregătire directoare"
+log "[4/16] Pregătire directoare"
 
 mkdir -p "${K3S_DIR}"
 mkdir -p "${K3S_DIR}/traefik"
@@ -321,7 +326,7 @@ fi
 # K3s installation
 # ------------------------------------------------------------
 
-log "[5/15] Instalare K3s"
+log "[5/16] Instalare K3s"
 
 if command -v k3s >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^k3s.service'; then
 
@@ -365,7 +370,7 @@ export KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 # Wait for Kubernetes API
 # ------------------------------------------------------------
 
-log "[6/15] Aștept Kubernetes API"
+log "[6/16] Aștept Kubernetes API"
 
 API_READY="false"
 
@@ -473,7 +478,7 @@ kubectl get nodes -o wide
 # Helm installation
 # ------------------------------------------------------------
 
-log "[7/15] Verific Helm"
+log "[7/16] Verific Helm"
 
 if ! command -v helm >/dev/null 2>&1; then
 
@@ -493,7 +498,7 @@ helm version
 # Rancher repository
 # ------------------------------------------------------------
 
-log "[8/15] Configurez Rancher Latest repository"
+log "[8/16] Configurez Rancher Latest repository"
 
 helm repo add \
     "${RANCHER_REPO}" \
@@ -514,7 +519,7 @@ helm search repo \
 # Find newest compatible Rancher
 # ------------------------------------------------------------
 
-log "[9/15] Detectez cea mai nouă versiune Rancher compatibilă"
+log "[9/16] Detectez cea mai nouă versiune Rancher compatibilă"
 
 RANCHER_VERSION=""
 
@@ -641,7 +646,7 @@ fi
 # Install cert-manager
 # ------------------------------------------------------------
 
-log "[10/15] Instalez cert-manager"
+log "[10/16] Instalez cert-manager"
 
 # Install cert-manager CRDs and controller
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.crds.yaml
@@ -683,7 +688,7 @@ kubectl get pods -n cert-manager
 # TLS secret for Traefik
 # ------------------------------------------------------------
 
-log "[11/15] Configurez Wildcard TLS"
+log "[11/16] Configurez Wildcard TLS"
 
 kubectl create namespace kube-system \
     --dry-run=client \
@@ -705,7 +710,7 @@ kubectl get secret wildcard-tls -n kube-system
 # Traefik configuration
 # ------------------------------------------------------------
 
-log "[12/15] Configurez Traefik"
+log "[12/16] Configurez Traefik"
 
 cat > "${K3S_DIR}/traefik/traefik-config.yaml" <<'EOF'
 apiVersion: helm.cattle.io/v1
@@ -725,11 +730,52 @@ spec:
         default:
           defaultCertificate:
             secretName: wildcard-tls
+
+    # Enable Traefik dashboard
+    dashboard:
+      enabled: true
+      domain: traefik.aalto.md
 EOF
 
 cp -f \
     "${K3S_DIR}/traefik/traefik-config.yaml" \
     /var/lib/rancher/k3s/server/manifests/traefik-config.yaml
+
+# Also create a separate Ingress for Traefik dashboard
+log "[12b/16] Configurez Traefik Dashboard Ingress"
+
+cat > "${K3S_DIR}/traefik/traefik-ingress.yaml" <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: traefik-dashboard
+  namespace: kube-system
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # Enable basic auth or IP whitelist if needed
+    # traefik.ingress.kubernetes.io/router.middlewares: kube-system-traefik-auth@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - ${TRAEFIK_HOSTNAME}
+    secretName: wildcard-tls
+  rules:
+  - host: ${TRAEFIK_HOSTNAME}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: traefik
+            port:
+              number: 9000
+EOF
+
+kubectl apply -f "${K3S_DIR}/traefik/traefik-ingress.yaml"
 
 echo
 echo "Aștept Traefik..."
@@ -750,11 +796,19 @@ kubectl get pods \
     -o wide \
     || true
 
+echo
+echo "Traefik Ingress:"
+kubectl get ingress \
+    -n kube-system \
+    traefik-dashboard \
+    -o wide \
+    || true
+
 # ------------------------------------------------------------
 # Rancher namespace
 # ------------------------------------------------------------
 
-log "[13/15] Pregătesc Rancher"
+log "[13/16] Pregătesc Rancher"
 
 kubectl create namespace cattle-system \
     --dry-run=client \
@@ -804,7 +858,7 @@ chmod 600 "${K3S_DIR}/rancher/values.yaml"
 # Install Rancher
 # ------------------------------------------------------------
 
-log "[14/15] Instalez Rancher"
+log "[14/16] Instalez Rancher"
 
 echo
 echo "Rancher repository:"
@@ -859,7 +913,7 @@ fi
 # Wait Rancher
 # ------------------------------------------------------------
 
-log "[15/15] Aștept Rancher"
+log "[15/16] Aștept Rancher"
 
 echo
 
@@ -880,6 +934,8 @@ kubectl wait \
 # ------------------------------------------------------------
 # Save information
 # ------------------------------------------------------------
+
+log "[16/16] Salvez informațiile instalării"
 
 cat > "${RANCHER_INFO_FILE}" <<EOF
 ============================================================
@@ -928,6 +984,16 @@ Password:
 ${RANCHER_PASSWORD}
 
 ============================================================
+TRAEFIK
+============================================================
+
+Traefik URL:
+https://${TRAEFIK_HOSTNAME}
+
+Traefik Dashboard Ingress:
+kube-system/traefik-dashboard
+
+============================================================
 TLS
 ============================================================
 
@@ -959,6 +1025,9 @@ ${K3S_DIR}/k3s.yaml
 Traefik configuration:
 ${K3S_DIR}/traefik/traefik-config.yaml
 
+Traefik Ingress:
+${K3S_DIR}/traefik/traefik-ingress.yaml
+
 Rancher values:
 ${K3S_DIR}/rancher/values.yaml
 
@@ -981,9 +1050,8 @@ HTTP automatically redirects to HTTPS.
 DNS
 ============================================================
 
-dashboard.aalto.md
-
-must point to the IP address of this K3s server.
+dashboard.aalto.md  -> IP_SERVER_K3S
+traefik.aalto.md   -> IP_SERVER_K3S
 
 ============================================================
 EOF
@@ -1013,6 +1081,13 @@ echo
 kubectl get pods \
     -n kube-system \
     -l app.kubernetes.io/name=traefik \
+    -o wide \
+    || true
+
+echo
+echo "Traefik Ingress:"
+kubectl get ingress \
+    -n kube-system \
     -o wide \
     || true
 
@@ -1066,12 +1141,17 @@ echo
 echo "  https://${RANCHER_HOSTNAME}"
 echo
 
+echo "Traefik Dashboard URL:"
+echo
+echo "  https://${TRAEFIK_HOSTNAME}"
+echo
+
 echo "Username:"
 echo
 echo "  admin"
 echo
 
-echo "Password:"
+echo "Rancher Password:"
 echo
 echo "  ${RANCHER_PASSWORD}"
 echo
@@ -1101,5 +1181,6 @@ echo
 echo "DNS:"
 echo
 echo "  dashboard.aalto.md -> IP_SERVER_K3S"
+echo "  traefik.aalto.md  -> IP_SERVER_K3S"
 echo
 echo "============================================================"
