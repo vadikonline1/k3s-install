@@ -130,7 +130,7 @@ echo "Rancher hostname:"
 echo "  https://${RANCHER_HOSTNAME}"
 echo
 echo "Traefik hostname:"
-echo "  https://${TRAEFIK_HOSTNAME}"
+echo "  https://${TRAEFIK_HOSTNAME}/dashboard/"
 echo
 
 # ------------------------------------------------------------
@@ -153,7 +153,7 @@ fi
 # Detect OS/package manager
 # ------------------------------------------------------------
 
-log "[1/16] Detectare sistem"
+log "[1/17] Detectare sistem"
 
 if command -v dnf >/dev/null 2>&1; then
     PKG="dnf"
@@ -171,7 +171,7 @@ echo "Package manager: ${PKG}"
 # Install required packages
 # ------------------------------------------------------------
 
-log "[2/16] Instalare pachete necesare"
+log "[2/17] Instalare pachete necesare"
 
 if [[ "${PKG}" == "dnf" || "${PKG}" == "yum" ]]; then
 
@@ -231,7 +231,7 @@ fi
 # Firewall
 # ------------------------------------------------------------
 
-log "[3/16] Configurare firewall"
+log "[3/17] Configurare firewall"
 
 if systemctl list-unit-files 2>/dev/null | grep -q '^firewalld.service'; then
 
@@ -245,7 +245,7 @@ fi
 # Directories
 # ------------------------------------------------------------
 
-log "[4/16] Pregătire directoare"
+log "[4/17] Pregătire directoare"
 
 mkdir -p "${K3S_DIR}"
 mkdir -p "${K3S_DIR}/traefik"
@@ -276,7 +276,6 @@ chmod 600 "${K3S_DIR}/cert/wildcard.key"
 echo
 echo "Verific parola Rancher..."
 
-# Dacă fișierul există dar e corupt, îl ștergem și regenerăm
 if [[ -f "${RANCHER_PASSWORD_FILE}" ]]; then
     RANCHER_PASSWORD="$(grep '^Password:' "${RANCHER_PASSWORD_FILE}" 2>/dev/null | head -1 | sed 's/^Password:[[:space:]]*//')"
     
@@ -326,7 +325,7 @@ fi
 # K3s installation
 # ------------------------------------------------------------
 
-log "[5/16] Instalare K3s"
+log "[5/17] Instalare K3s"
 
 if command -v k3s >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^k3s.service'; then
 
@@ -370,7 +369,7 @@ export KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 # Wait for Kubernetes API
 # ------------------------------------------------------------
 
-log "[6/16] Aștept Kubernetes API"
+log "[6/17] Aștept Kubernetes API"
 
 API_READY="false"
 
@@ -410,14 +409,12 @@ echo "Kubernetes API este READY."
 echo
 echo "Detectez versiunea Kubernetes..."
 
-# Try jsonpath first (most reliable)
 KUBE_SERVER_VERSION="$(
     kubectl version -o json 2>/dev/null \
     | sed -n 's/.*"gitVersion":"\([^"]*\)".*/\1/p' \
     | head -1
 )"
 
-# Fallback to node info
 if [[ -z "${KUBE_SERVER_VERSION}" ]]; then
     KUBE_SERVER_VERSION="$(
         kubectl get nodes \
@@ -443,10 +440,7 @@ echo
 echo "Kubernetes server:"
 echo "  ${KUBE_SERVER_VERSION}"
 
-# Remove v prefix for comparison
 KUBE_VERSION="${KUBE_SERVER_VERSION#v}"
-
-# Extract major.minor (e.g., 1.36)
 KUBE_VERSION_SHORT="$(echo "${KUBE_VERSION}" | cut -d. -f1-2)"
 
 echo
@@ -478,7 +472,7 @@ kubectl get nodes -o wide
 # Helm installation
 # ------------------------------------------------------------
 
-log "[7/16] Verific Helm"
+log "[7/17] Verific Helm"
 
 if ! command -v helm >/dev/null 2>&1; then
 
@@ -498,7 +492,7 @@ helm version
 # Rancher repository
 # ------------------------------------------------------------
 
-log "[8/16] Configurez Rancher Latest repository"
+log "[8/17] Configurez Rancher Latest repository"
 
 helm repo add \
     "${RANCHER_REPO}" \
@@ -519,7 +513,7 @@ helm search repo \
 # Find newest compatible Rancher
 # ------------------------------------------------------------
 
-log "[9/16] Detectez cea mai nouă versiune Rancher compatibilă"
+log "[9/17] Detectez cea mai nouă versiune Rancher compatibilă"
 
 RANCHER_VERSION=""
 
@@ -530,7 +524,6 @@ echo
 echo "Caut Rancher compatibil..."
 echo
 
-# Get all versions from repository
 RANCHER_VERSIONS=()
 while IFS= read -r line; do
     RANCHER_VERSIONS+=("$line")
@@ -554,7 +547,6 @@ for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
 
     echo "Testez Rancher ${CANDIDATE_VERSION} ..."
 
-    # Get kubeVersion from chart using helm show
     KUBE_VERSION_CONSTRAINT=""
     KUBE_VERSION_CONSTRAINT="$(
         helm show chart \
@@ -565,7 +557,6 @@ for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
         | sed 's/^[kK][uU][bB][eE][vV][eE][rR][sS][iI][oO][nN]:[[:space:]]*//'
     )"
 
-    # If no kubeVersion constraint, assume compatible
     if [[ -z "${KUBE_VERSION_CONSTRAINT}" ]]; then
         echo "  ✓ compatibil (fără restricții kubeVersion)"
         RANCHER_VERSION="${CANDIDATE_VERSION}"
@@ -575,34 +566,25 @@ for CANDIDATE_VERSION in "${RANCHER_VERSIONS[@]}"; do
 
     echo "  kubeVersion: ${KUBE_VERSION_CONSTRAINT}"
 
-    # Simple compatibility check based on common patterns
     COMPATIBLE="false"
     
-    # Check for Kubernetes 1.36 compatibility
-    # Rancher 2.15.0 supports Kubernetes 1.36
-    # Rancher 2.14.x supports Kubernetes up to 1.35
     if [[ "${CANDIDATE_VERSION}" == 2.15.* ]]; then
-        # Rancher 2.15.x supports Kubernetes 1.36
         if [[ "${KUBE_VERSION_SHORT}" == "1.36" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.37" ]]; then
             COMPATIBLE="true"
         fi
     elif [[ "${CANDIDATE_VERSION}" == 2.14.* ]]; then
-        # Rancher 2.14.x supports Kubernetes up to 1.35
         if [[ "${KUBE_VERSION_SHORT}" == "1.35" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.34" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.33" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.32" ]]; then
             COMPATIBLE="true"
         fi
     elif [[ "${CANDIDATE_VERSION}" == 2.13.* ]]; then
-        # Rancher 2.13.x supports Kubernetes up to 1.34
         if [[ "${KUBE_VERSION_SHORT}" == "1.34" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.33" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.32" ]]; then
             COMPATIBLE="true"
         fi
     elif [[ "${CANDIDATE_VERSION}" == 2.12.* ]]; then
-        # Rancher 2.12.x supports Kubernetes up to 1.33
         if [[ "${KUBE_VERSION_SHORT}" == "1.33" ]] || [[ "${KUBE_VERSION_SHORT}" == "1.32" ]]; then
             COMPATIBLE="true"
         fi
     else
-        # For older versions, try more permissive check
         COMPATIBLE="true"
     fi
 
@@ -646,16 +628,13 @@ fi
 # Install cert-manager
 # ------------------------------------------------------------
 
-log "[10/16] Instalez cert-manager"
+log "[10/17] Instalez cert-manager"
 
-# Install cert-manager CRDs and controller
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.crds.yaml
 
-# Add cert-manager repository
 helm repo add jetstack https://charts.jetstack.io --force-update
 helm repo update
 
-# Install cert-manager
 helm upgrade --install cert-manager jetstack/cert-manager \
     --namespace cert-manager \
     --create-namespace \
@@ -664,7 +643,6 @@ helm upgrade --install cert-manager jetstack/cert-manager \
     --wait \
     --timeout 10m
 
-# Wait for cert-manager
 echo
 echo "Aștept cert-manager..."
 
@@ -688,7 +666,7 @@ kubectl get pods -n cert-manager
 # TLS secret for Traefik
 # ------------------------------------------------------------
 
-log "[11/16] Configurez Wildcard TLS"
+log "[11/17] Configurez Wildcard TLS"
 
 kubectl create namespace kube-system \
     --dry-run=client \
@@ -707,10 +685,10 @@ echo "Wildcard TLS:"
 kubectl get secret wildcard-tls -n kube-system
 
 # ------------------------------------------------------------
-# Traefik configuration
+# Traefik configuration with dashboard
 # ------------------------------------------------------------
 
-log "[12/16] Configurez Traefik"
+log "[12/17] Configurez Traefik cu Dashboard"
 
 cat > "${K3S_DIR}/traefik/traefik-config.yaml" <<'EOF'
 apiVersion: helm.cattle.io/v1
@@ -735,14 +713,24 @@ spec:
     dashboard:
       enabled: true
       domain: traefik.aalto.md
+
+    # Additional arguments for dashboard
+    additionalArguments:
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      - "--log.level=INFO"
+      - "--accesslog=true"
 EOF
 
 cp -f \
     "${K3S_DIR}/traefik/traefik-config.yaml" \
     /var/lib/rancher/k3s/server/manifests/traefik-config.yaml
 
-# Also create a separate Ingress for Traefik dashboard
-log "[12b/16] Configurez Traefik Dashboard Ingress"
+# ------------------------------------------------------------
+# Create Traefik Dashboard Ingress
+# ------------------------------------------------------------
+
+log "[12b/17] Creez Ingress pentru Traefik Dashboard"
 
 cat > "${K3S_DIR}/traefik/traefik-ingress.yaml" <<EOF
 apiVersion: networking.k8s.io/v1
@@ -754,8 +742,7 @@ metadata:
     kubernetes.io/ingress.class: traefik
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    # Enable basic auth or IP whitelist if needed
-    # traefik.ingress.kubernetes.io/router.middlewares: kube-system-traefik-auth@kubernetescrd
+    traefik.ingress.kubernetes.io/service.serversscheme: http
 spec:
   ingressClassName: traefik
   tls:
@@ -777,38 +764,49 @@ EOF
 
 kubectl apply -f "${K3S_DIR}/traefik/traefik-ingress.yaml"
 
+# ------------------------------------------------------------
+# Restart Traefik to apply changes
+# ------------------------------------------------------------
+
+echo
+echo "Restart Traefik pentru a aplica configurația..."
+
+kubectl delete pod -n kube-system -l app.kubernetes.io/name=traefik || true
+
 echo
 echo "Aștept Traefik..."
 
-sleep 10
+sleep 15
 
 kubectl rollout status \
     deployment/traefik \
     -n kube-system \
-    --timeout=300s \
-    || true
+    --timeout=300s || true
 
 echo
-echo "Traefik:"
+echo "Traefik pods:"
 kubectl get pods \
     -n kube-system \
     -l app.kubernetes.io/name=traefik \
-    -o wide \
-    || true
+    -o wide || true
 
 echo
 echo "Traefik Ingress:"
 kubectl get ingress \
     -n kube-system \
-    traefik-dashboard \
-    -o wide \
-    || true
+    -o wide || true
+
+echo
+echo "Traefik Service:"
+kubectl get svc \
+    -n kube-system \
+    traefik || true
 
 # ------------------------------------------------------------
 # Rancher namespace
 # ------------------------------------------------------------
 
-log "[13/16] Pregătesc Rancher"
+log "[13/17] Pregătesc Rancher"
 
 kubectl create namespace cattle-system \
     --dry-run=client \
@@ -858,7 +856,7 @@ chmod 600 "${K3S_DIR}/rancher/values.yaml"
 # Install Rancher
 # ------------------------------------------------------------
 
-log "[14/16] Instalez Rancher"
+log "[14/17] Instalez Rancher"
 
 echo
 echo "Rancher repository:"
@@ -874,7 +872,6 @@ echo "Hostname:"
 echo "  ${RANCHER_HOSTNAME}"
 echo
 
-# Retry installation if it fails
 MAX_RETRIES=3
 RETRY_COUNT=0
 INSTALLED=false
@@ -913,7 +910,7 @@ fi
 # Wait Rancher
 # ------------------------------------------------------------
 
-log "[15/16] Aștept Rancher"
+log "[15/17] Aștept Rancher"
 
 echo
 
@@ -932,10 +929,43 @@ kubectl wait \
     --timeout=900s || true
 
 # ------------------------------------------------------------
+# Create Traefik middleware for security (optional)
+# ------------------------------------------------------------
+
+log "[16/17] Configurez securitate Traefik (opțional)"
+
+cat > "${K3S_DIR}/traefik/traefik-middleware.yaml" <<EOF
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: traefik-dashboard-auth
+  namespace: kube-system
+spec:
+  basicAuth:
+    secret: traefik-dashboard-auth-secret
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: traefik-dashboard-auth-secret
+  namespace: kube-system
+type: kubernetes.io/basic-auth
+stringData:
+  username: admin
+  # Password: admin123 (schimbă această parolă)
+  password: \$2y\$10\$5qLq5qLq5qLq5qLq5qLq5qO
+EOF
+
+# Note: Comentat deoarece necesită htpasswd pentru a genera parola corectă
+# kubectl apply -f "${K3S_DIR}/traefik/traefik-middleware.yaml" || true
+
+echo "Pentru securitate, poți adăuga autentificare la Traefik dashboard folosind middleware."
+
+# ------------------------------------------------------------
 # Save information
 # ------------------------------------------------------------
 
-log "[16/16] Salvez informațiile instalării"
+log "[17/17] Salvez informațiile instalării"
 
 cat > "${RANCHER_INFO_FILE}" <<EOF
 ============================================================
@@ -987,11 +1017,14 @@ ${RANCHER_PASSWORD}
 TRAEFIK
 ============================================================
 
-Traefik URL:
-https://${TRAEFIK_HOSTNAME}
+Traefik Dashboard URL:
+https://${TRAEFIK_HOSTNAME}/dashboard/
 
 Traefik Dashboard Ingress:
 kube-system/traefik-dashboard
+
+Traefik Service:
+kube-system/traefik (port 9000 for dashboard)
 
 ============================================================
 TLS
@@ -1081,15 +1114,13 @@ echo
 kubectl get pods \
     -n kube-system \
     -l app.kubernetes.io/name=traefik \
-    -o wide \
-    || true
+    -o wide || true
 
 echo
 echo "Traefik Ingress:"
 kubectl get ingress \
     -n kube-system \
-    -o wide \
-    || true
+    -o wide || true
 
 echo
 echo "============================================================"
@@ -1099,8 +1130,7 @@ echo
 
 kubectl get pods \
     -n cert-manager \
-    -o wide \
-    || true
+    -o wide || true
 
 echo
 echo "============================================================"
@@ -1143,7 +1173,7 @@ echo
 
 echo "Traefik Dashboard URL:"
 echo
-echo "  https://${TRAEFIK_HOSTNAME}"
+echo "  https://${TRAEFIK_HOSTNAME}/dashboard/"
 echo
 
 echo "Username:"
@@ -1182,5 +1212,16 @@ echo "DNS:"
 echo
 echo "  dashboard.aalto.md -> IP_SERVER_K3S"
 echo "  traefik.aalto.md  -> IP_SERVER_K3S"
+echo
+echo "============================================================"
+echo
+echo "Pentru a accesa Traefik dashboard:"
+echo
+echo "  1. Asigură-te că DNS-ul pentru traefik.aalto.md punctează la IP-ul serverului"
+echo "  2. Accesează: https://traefik.aalto.md/dashboard/"
+echo "  3. Dacă nu funcționează, verifică:"
+echo "     kubectl get ingress -n kube-system"
+echo "     kubectl get svc -n kube-system traefik"
+echo "     kubectl logs -n kube-system deployment/traefik"
 echo
 echo "============================================================"
