@@ -153,7 +153,7 @@ fi
 # Detect OS/package manager
 # ------------------------------------------------------------
 
-log "[1/17] Detectare sistem"
+log "[1/15] Detectare sistem"
 
 if command -v dnf >/dev/null 2>&1; then
     PKG="dnf"
@@ -171,7 +171,7 @@ echo "Package manager: ${PKG}"
 # Install required packages
 # ------------------------------------------------------------
 
-log "[2/17] Instalare pachete necesare"
+log "[2/15] Instalare pachete necesare"
 
 if [[ "${PKG}" == "dnf" || "${PKG}" == "yum" ]]; then
 
@@ -231,7 +231,7 @@ fi
 # Firewall
 # ------------------------------------------------------------
 
-log "[3/17] Configurare firewall"
+log "[3/15] Configurare firewall"
 
 if systemctl list-unit-files 2>/dev/null | grep -q '^firewalld.service'; then
 
@@ -245,7 +245,7 @@ fi
 # Directories
 # ------------------------------------------------------------
 
-log "[4/17] Pregătire directoare"
+log "[4/15] Pregătire directoare"
 
 mkdir -p "${K3S_DIR}"
 mkdir -p "${K3S_DIR}/traefik"
@@ -325,7 +325,7 @@ fi
 # K3s installation
 # ------------------------------------------------------------
 
-log "[5/17] Instalare K3s"
+log "[5/15] Instalare K3s"
 
 if command -v k3s >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^k3s.service'; then
 
@@ -369,7 +369,7 @@ export KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 # Wait for Kubernetes API
 # ------------------------------------------------------------
 
-log "[6/17] Aștept Kubernetes API"
+log "[6/15] Aștept Kubernetes API"
 
 API_READY="false"
 
@@ -472,7 +472,7 @@ kubectl get nodes -o wide
 # Helm installation
 # ------------------------------------------------------------
 
-log "[7/17] Verific Helm"
+log "[7/15] Verific Helm"
 
 if ! command -v helm >/dev/null 2>&1; then
 
@@ -492,7 +492,7 @@ helm version
 # Rancher repository
 # ------------------------------------------------------------
 
-log "[8/17] Configurez Rancher Latest repository"
+log "[8/15] Configurez Rancher Latest repository"
 
 helm repo add \
     "${RANCHER_REPO}" \
@@ -513,7 +513,7 @@ helm search repo \
 # Find newest compatible Rancher
 # ------------------------------------------------------------
 
-log "[9/17] Detectez cea mai nouă versiune Rancher compatibilă"
+log "[9/15] Detectez cea mai nouă versiune Rancher compatibilă"
 
 RANCHER_VERSION=""
 
@@ -625,48 +625,10 @@ if [[ "${RANCHER_FOUND}" != "true" ]]; then
 fi
 
 # ------------------------------------------------------------
-# Install cert-manager
-# ------------------------------------------------------------
-
-log "[10/17] Instalez cert-manager"
-
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.crds.yaml
-
-helm repo add jetstack https://charts.jetstack.io --force-update
-helm repo update
-
-helm upgrade --install cert-manager jetstack/cert-manager \
-    --namespace cert-manager \
-    --create-namespace \
-    --version v1.14.5 \
-    --set installCRDs=false \
-    --wait \
-    --timeout 10m
-
-echo
-echo "Aștept cert-manager..."
-
-kubectl -n cert-manager rollout status \
-    deployment/cert-manager \
-    --timeout=300s || true
-
-kubectl -n cert-manager rollout status \
-    deployment/cert-manager-cainjector \
-    --timeout=300s || true
-
-kubectl -n cert-manager rollout status \
-    deployment/cert-manager-webhook \
-    --timeout=300s || true
-
-echo
-echo "Cert-manager pods:"
-kubectl get pods -n cert-manager
-
-# ------------------------------------------------------------
 # TLS secret for Traefik
 # ------------------------------------------------------------
 
-log "[11/17] Configurez Wildcard TLS"
+log "[10/15] Configurez Wildcard TLS"
 
 kubectl create namespace kube-system \
     --dry-run=client \
@@ -688,7 +650,7 @@ kubectl get secret wildcard-tls -n kube-system
 # Traefik configuration with dashboard
 # ------------------------------------------------------------
 
-log "[12/17] Configurez Traefik cu Dashboard"
+log "[11/15] Configurez Traefik cu Dashboard"
 
 cat > "${K3S_DIR}/traefik/traefik-config.yaml" <<'EOF'
 apiVersion: helm.cattle.io/v1
@@ -730,7 +692,7 @@ cp -f \
 # Create Traefik Dashboard Ingress
 # ------------------------------------------------------------
 
-log "[12b/17] Creez Ingress pentru Traefik Dashboard"
+log "[11b/15] Creez Ingress pentru Traefik Dashboard"
 
 cat > "${K3S_DIR}/traefik/traefik-ingress.yaml" <<EOF
 apiVersion: networking.k8s.io/v1
@@ -806,7 +768,7 @@ kubectl get svc \
 # Rancher namespace
 # ------------------------------------------------------------
 
-log "[13/17] Pregătesc Rancher"
+log "[12/15] Pregătesc Rancher"
 
 kubectl create namespace cattle-system \
     --dry-run=client \
@@ -856,7 +818,7 @@ chmod 600 "${K3S_DIR}/rancher/values.yaml"
 # Install Rancher
 # ------------------------------------------------------------
 
-log "[14/17] Instalez Rancher"
+log "[13/15] Instalez Rancher"
 
 echo
 echo "Rancher repository:"
@@ -910,7 +872,7 @@ fi
 # Wait Rancher
 # ------------------------------------------------------------
 
-log "[15/17] Aștept Rancher"
+log "[14/15] Aștept Rancher"
 
 echo
 
@@ -929,43 +891,10 @@ kubectl wait \
     --timeout=900s || true
 
 # ------------------------------------------------------------
-# Create Traefik middleware for security (optional)
-# ------------------------------------------------------------
-
-log "[16/17] Configurez securitate Traefik (opțional)"
-
-cat > "${K3S_DIR}/traefik/traefik-middleware.yaml" <<EOF
-apiVersion: traefik.containo.us/v1alpha1
-kind: Middleware
-metadata:
-  name: traefik-dashboard-auth
-  namespace: kube-system
-spec:
-  basicAuth:
-    secret: traefik-dashboard-auth-secret
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: traefik-dashboard-auth-secret
-  namespace: kube-system
-type: kubernetes.io/basic-auth
-stringData:
-  username: admin
-  # Password: admin123 (schimbă această parolă)
-  password: \$2y\$10\$5qLq5qLq5qLq5qLq5qLq5qO
-EOF
-
-# Note: Comentat deoarece necesită htpasswd pentru a genera parola corectă
-# kubectl apply -f "${K3S_DIR}/traefik/traefik-middleware.yaml" || true
-
-echo "Pentru securitate, poți adăuga autentificare la Traefik dashboard folosind middleware."
-
-# ------------------------------------------------------------
 # Save information
 # ------------------------------------------------------------
 
-log "[17/17] Salvez informațiile instalării"
+log "[15/15] Salvez informațiile instalării"
 
 cat > "${RANCHER_INFO_FILE}" <<EOF
 ============================================================
@@ -1120,16 +1049,6 @@ echo
 echo "Traefik Ingress:"
 kubectl get ingress \
     -n kube-system \
-    -o wide || true
-
-echo
-echo "============================================================"
-echo " CERT-MANAGER"
-echo "============================================================"
-echo
-
-kubectl get pods \
-    -n cert-manager \
     -o wide || true
 
 echo
